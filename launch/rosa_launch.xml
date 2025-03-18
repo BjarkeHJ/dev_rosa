@@ -1,9 +1,10 @@
 <launch>
     <node pkg="dev_rosa" exec="rosa_exec" name="rosa_node" output="screen">
         <!-- ROS2 ROSA NODE -->
-        <param name="rosa_node/num_scans" type="int" value="10"/>
+        <param name="num_scans" type="int" value="5"/>
 
         <!-- ROSA MAIN -->
-        <param name="rosa_main/normal_est_KNN" type="int" value="10"/>
+        <param name="normal_est_KNN" type="int" value="10"/>
+        <param name="neighbour_radius" type="float" value="0.1"/>
     </node>
 </launch>
