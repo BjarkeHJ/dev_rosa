@@ -1,0 +1,9 @@
+<launch>
+    <node pkg="dev_rosa" exec="rosa_exec" name="rosa_node" output="screen">
+        <!-- ROS2 ROSA NODE -->
+        <param name="rosa_node/num_scans" type="int" value="10"/>
+
+        <!-- ROSA MAIN -->
+        <param name="rosa_main/normal_est_KNN" type="int" value="10"/>
+    </node>
+</launch>

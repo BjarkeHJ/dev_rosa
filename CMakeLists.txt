@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(ros2_rosa)
+project(dev_rosa)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -44,7 +44,7 @@ target_link_libraries(${EXEC_NAME} ${PCL_LIBRARIES} Eigen3::Eigen)
 ament_target_dependencies(${EXEC_NAME} ${dependencies})
 
 install(TARGETS ${EXEC_NAME} DESTINATION lib/${PROJECT_NAME})
-
+install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
