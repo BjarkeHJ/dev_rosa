@@ -16,6 +16,7 @@ public:
     rclcpp::TimerBase::SharedPtr run_timer_;
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_pub_2_;
 
 private:
     /* Params */
@@ -52,9 +53,12 @@ void RosaNode::init() {
     run_timer_ = this->create_wall_timer(std::chrono::milliseconds(50), std::bind(&RosaNode::run, this));
 
     debug_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/debugger", 10);
+    debug_pub_2_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/debugger_2", 10);
 }
 
 void RosaNode::pcd_callback(const sensor_msgs::msg::PointCloud2::SharedPtr pcd_msg) {
+    // if (current_pcd == nullptr || batch_pcd == nullptr) return;
+
     pcl::fromROSMsg(*pcd_msg, *current_pcd);
     *batch_pcd += *current_pcd;
     scan_counter++;
@@ -67,8 +71,12 @@ void RosaNode::pcd_callback(const sensor_msgs::msg::PointCloud2::SharedPtr pcd_m
 
 void RosaNode::set_cloud() {
     /* Supply ROSA algorithm with current cloud */
+    if (skel_op->SSD.pts_ == nullptr) {
+        // Takes care of startup synch issues...
+        return;
+    }
     pcl::copyPointCloud(*batch_pcd, *skel_op->SSD.pts_);
-    run_flag = true;
+    run_flag = true; // Ready to run ROSA algorithm
 }
 
 void RosaNode::run() {
@@ -80,15 +88,20 @@ void RosaNode::run() {
     }
 
     if (run_flag) {
-        RCLCPP_INFO(this->get_logger(), "Current Cloud Size: %zu", skel_op->SSD.pts_->points.size());
         skel_op->main();
         
         // Temp: Debugger publisher - Specify pointcloud quantity to visualize in Rviz2...
         sensor_msgs::msg::PointCloud2 db_out;
-        pcl::toROSMsg(*skel_op->SSD.pts_, db_out);
-        db_out.header.frame_id = "Sensor";
+        pcl::toROSMsg(*skel_op->debug_cloud, db_out);
+        db_out.header.frame_id = "lidar_frame";
         db_out.header.stamp = this->get_clock()->now();
         debug_pub_->publish(db_out);
+
+        sensor_msgs::msg::PointCloud2 db_out_2;
+        pcl::toROSMsg(*skel_op->SSD.pts_, db_out_2);
+        db_out_2.header.frame_id = db_out.header.frame_id;
+        db_out_2.header.stamp = db_out.header.stamp;
+        debug_pub_2_->publish(db_out_2);
 
         // Set flag to allow next cloud...
         run_flag = false;
