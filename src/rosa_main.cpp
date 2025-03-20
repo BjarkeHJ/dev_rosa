@@ -10,6 +10,9 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     node->declare_parameter<double>("delta", 0.01);
     node->declare_parameter<int>("dcrosa_iter", 1);
     node->declare_parameter<double>("sample_radius", 0.05);
+    node->declare_parameter<double>("alpha", 0.3);
+    node->declare_parameter<double>("upper_angle_inner", 45.0);
+    node->declare_parameter<double>("upper_length_inner", 1.0);
     ne_KNN = node->get_parameter("normal_est_KNN").as_int();
     radius_neigh = node->get_parameter("neighbour_radius").as_double();
     nMax = node->get_parameter("max_pts").as_int();
@@ -18,14 +21,20 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     delta = node->get_parameter("delta").as_double();
     dcrosa_iter = node->get_parameter("dcrosa_iter").as_int();
     sample_radius = node->get_parameter("sample_radius").as_double();
+    alpha_recenter = node->get_parameter("alpha").as_double();
+    angle_upper = node->get_parameter("upper_angle_inner").as_double();
+    length_upper = node->get_parameter("upper_length_inner").as_double();
 
     /* Initialize data structures */
     SSD.pts_.reset(new pcl::PointCloud<pcl::PointXYZ>);
     SSD.normals_.reset(new pcl::PointCloud<pcl::Normal>);
     SSD.cloud_w_normals.reset(new pcl::PointCloud<pcl::PointNormal>);
+    pset_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
+    SSD.rosa_pts.reset(new pcl::PointCloud<pcl::PointXYZ>);
     skeleton_ver_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
 
     debug_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
+    debug_cloud_2.reset(new pcl::PointCloud<pcl::PointXYZ>);
 
     th_mah = 0.1 * radius_neigh;
 }
@@ -43,19 +52,25 @@ void RosaMain::main() {
 
     drosa();
     dcrosa();
-
-    // Look into lineextract...
     lineextract();
-    debug_cloud = skeleton_ver_cloud;
-    std::cout << "Skeleton Size: " << skeleton_ver_cloud->points.size() << std::endl;
+    recenter();
+    restore_scale();
+    // graph_decomposition();
+    // inner_decomposition();
+
+    debug_cloud->clear();
+    debug_cloud = SSD.rosa_pts;
+    std::cout << "Rosa Points Size: " << debug_cloud->points.size() << std::endl;
     
-    // debug_cloud->clear();
-    // for (int i=0; i<pcd_size_; i++) {
+    debug_cloud_2->clear();
+    debug_cloud_2 = SSD.pts_;
+
+    // for (int i=0; i<SSD.vertices.rows(); i++) {
     //     pcl::PointXYZ ptt;
-    //     ptt.x = pset(i,0);
-    //     ptt.y = pset(i,1);
-    //     ptt.z = pset(i,2);
-    //     debug_cloud->points.push_back(ptt);
+    //     ptt.x = SSD.vertices.row(i)(0);
+    //     ptt.y = SSD.vertices.row(i)(1);
+    //     ptt.z = SSD.vertices.row(i)(2);
+    //     debug_cloud_2->points.push_back(ptt);
     // }
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -335,7 +350,8 @@ void RosaMain::dcrosa() {
         pset = newpset;
 
         /* Shrinking */
-        pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        // pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        pset_cloud->clear();
         pset_cloud->width = pset.rows();
         pset_cloud->height = 1;
         pset_cloud->points.resize(pset_cloud->width * pset_cloud->height);
@@ -387,7 +403,7 @@ void RosaMain::lineextract() {
     Extra_Del ed_le;
     int outlier = 2;
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    pset_cloud->clear();
     pcl::PointXYZ pset_pt;
 
     Eigen::MatrixXi bad_sample = Eigen::MatrixXi::Zero(pcd_size_, 1); // Bad samples zero initialized
@@ -399,7 +415,7 @@ void RosaMain::lineextract() {
 
     for (int i=0; i<pcd_size_; i++) {
         if ((int)SSD.neighs[i].size() <= outlier) {
-            // if the point has less than or equal to two neighbours it is classified as a bad_sample
+            // if the point has less than or equal to 2 neighbours it is classified as a bad_sample
             bad_sample(i,0) = 1; // flagged with 1
         }
     }
@@ -416,36 +432,38 @@ void RosaMain::lineextract() {
     pcl::KdTreeFLANN<pcl::PointXYZ> tree;
     tree.setInputCloud(pset_cloud);
     SSD.skelver.resize(0,3);
-    Eigen::MatrixXd mindst = Eigen::MatrixXd::Constant(pcd_size_, 1, std::numeric_limits<double>::quiet_NaN()); // "min distance" initialized with quiet_NaN
+    // mindst stores the minimum squared distance from each unassigned point to an assigned point.
+    Eigen::MatrixXd mindst = Eigen::MatrixXd::Constant(pcd_size_, 1, std::numeric_limits<double>::quiet_NaN()); 
     SSD.corresp = Eigen::MatrixXd::Constant(pcd_size_, 1, -1); // initialized with value -1
 
     // Farthest Point Sampling (FPS) / Skeletonization
     for (int k=0; k<pcd_size_; k++) {
-        if (SSD.corresp(k,0) != -1) continue; // if index is not equal to -1 -> continue
+        if (SSD.corresp(k,0) != -1) continue; // skip already assigned points
 
-        mindst(k,0) = 1e8; //set mindst(k) to a very large distance
+        mindst(k,0) = 1e8; // set large to ensure update
 
         // run while ANY element in corresp is still -1
         while (!((SSD.corresp.array() != -1).all())) {
 
             int maxIdx = argmax_eigen(mindst); // maxIdx represents the most distant unassigned point
 
-            if (mindst(maxIdx,0) == 0) break; // If that value is 0 break
-            if (!std::isnan(mindst(maxIdx, 0)) && mindst(maxIdx,0) == 0) break; // if not a NaN and value is 0 break
+            if (mindst(maxIdx,0) == 0) break; // If the largest distance value is zero...
+            if (!std::isnan(mindst(maxIdx, 0)) && mindst(maxIdx,0) == 0) break;
 
-            std::vector<int>().swap(indxs);
-            std::vector<float>().swap(radius_squared_distance);
+            // The current search point
             search_point.x = pset(maxIdx,0);
             search_point.y = pset(maxIdx,1);
             search_point.z = pset(maxIdx,2);
-
+            
             // Search for points within the sample_radius of the current search point. 
             // The indices of the nearest points are set in indxs
+            std::vector<int>().swap(indxs);
+            std::vector<float>().swap(radius_squared_distance);
             tree.radiusSearch(search_point, sample_radius, indxs, radius_squared_distance);
 
-            int_nidxs = Eigen::Map<Eigen::MatrixXi>(indxs.data(), indxs.size(), 1); // Maps the indices of the nearest points. 
+            int_nidxs = Eigen::Map<Eigen::MatrixXi>(indxs.data(), indxs.size(), 1); // structures the column vector of the nearest neighbours 
             nIdxs = int_nidxs.cast<double>();
-            extract_corresp = ed_le.rows_ext_M(nIdxs, SSD.corresp); // Extract the section RC.corresp according to the indices of the nearest points
+            extract_corresp = ed_le.rows_ext_M(nIdxs, SSD.corresp); // Extract the section corresp according to the indices of the nearest points
 
             // if these are all different from -1 set the mindst value at maxIdx to 0...
             // If all neighbours wihtin sample_radius already has been assigned
@@ -454,15 +472,16 @@ void RosaMain::lineextract() {
                 continue; // go to beginning of while loop
             }
 
-
-            SSD.skelver.conservativeResize(SSD.skelver.rows()+1, SSD.skelver.cols()); // adds one row - add one vertice point to the skeleton
+            SSD.skelver.conservativeResize(SSD.skelver.rows()+1, SSD.skelver.cols()); // adds one row - add one vertex point to the skeleton
             SSD.skelver.row(SSD.skelver.rows()-1) = pset.row(maxIdx); // set new vertice to the point at the farthest distance within the sample_radius
 
-            // for every point index withing the sample_radius
+            // for every point withing the sample_radius
             for (int z=0; z<(int)indxs.size(); z++) {
-                // if the distance value at this index is NaN (unassigned) OR larger than the squared distance to the point
+
+                // if the distance value at this index is unassigned OR larger than the squared distance to the point
                 if (std::isnan(mindst(indxs[z],0)) || mindst(indxs[z],0) > radius_squared_distance[z]) {
                     mindst(indxs[z],0) = radius_squared_distance[z]; // set distance value to the squared distance
+
                     SSD.corresp(indxs[z], 0) = SSD.skelver.rows() - 1; // sets the corresp value to the number of rows of skelver minus one
                     // the above line will act as a sorting algorithm for connected points. It will assign 0, 1, 2,..., pcd_size_
                 }
@@ -470,9 +489,9 @@ void RosaMain::lineextract() {
         }
     }
 
+    // Store in point cloud... (not used)
     skeleton_ver_cloud->clear();
     pcl::PointXYZ pt_vertex;
-
     for (int r=0; r<(int)SSD.skelver.rows(); r++) {
         pt_vertex.x = SSD.skelver(r,0);
         pt_vertex.y = SSD.skelver(r,1);
@@ -480,114 +499,288 @@ void RosaMain::lineextract() {
         skeleton_ver_cloud->points.push_back(pt_vertex);
     }
 
+    int dim = SSD.skelver.rows(); // number of vertices
+    Eigen::MatrixXi Adj;
+    Adj = Eigen::MatrixXi::Zero(dim, dim);
+    std::vector<int> temp_surf(k_KNN);
+    std::vector<int> good_neighs;
 
-    // int dim = SSD.skelver.rows(); // number of vertices - should be current number of vertices perhaps?
-    // Eigen::MatrixXi Adj;
-    // Adj = Eigen::MatrixXi::Zero(dim, dim);
-    // std::vector<int> temp_surf(k_KNN);
-    // std::vector<int> good_neighs;
+    for (int pIdx=0; pIdx<pcd_size_; pIdx++) {
+        temp_surf.clear();
+        good_neighs.clear();
+        temp_surf = SSD.neighs_surf[pIdx];
 
-    // for (int pIdx=0; pIdx<pcd_size_; pIdx++) {
-    //     temp_surf.clear();
-    //     good_neighs.clear();
-    //     temp_surf = SSD.neighs_surf[pIdx];
+        for (int ne=0; ne<(int)temp_surf.size(); ne++) {
+            if (bad_sample(temp_surf[ne], 0) == 0) {
+                good_neighs.push_back(temp_surf[ne]);
+            }
+        }
 
-    //     for (int ne=0; ne<(int)temp_surf.size(); ne++) {
-    //         if (bad_sample(temp_surf[ne], 0) == 0) {
-    //             good_neighs.push_back(temp_surf[ne]);
-    //         }
-    //     }
+        if (SSD.corresp(pIdx,0) == -1) continue;
 
-    //     if (SSD.corresp(pIdx,0) == -1) continue;
+        for (int nidx=0; nidx<(int)good_neighs.size(); nidx++) {
+            if (SSD.corresp(good_neighs[nidx],0) == -1) continue;
+            Adj((int)SSD.corresp(pIdx,0), (int)SSD.corresp(good_neighs[nidx],0)) = 1;
+            Adj((int)SSD.corresp(good_neighs[nidx],0), (int)SSD.corresp(pIdx,0)) = 1;
+        }
+    }
 
-    //     for (int nidx=0; nidx<(int)good_neighs.size(); nidx++) {
-    //         if (SSD.corresp(good_neighs[nidx],0) == -1) continue;
-    //         Adj((int)SSD.corresp(pIdx,0), (int)SSD.corresp(good_neighs[nidx],0)) = 1;
-    //         Adj((int)SSD.corresp(good_neighs[nidx],0), (int)SSD.corresp(pIdx,0)) = 1;
-    //     }
-    // }
+    adj_before_collapse.resize(Adj.rows(), Adj.cols());
+    adj_before_collapse = Adj;
 
-    // adj_before_collapse.resize(Adj.rows(), Adj.cols());
-    // adj_before_collapse = Adj;
+    /* Edge collapse */
+    std::vector<int> ec_neighs;
+    Eigen::MatrixXd edge_rows;
+    edge_rows.resize(2,3);
 
-    // /* Edge collapse */
-    // std::vector<int> ec_neighs;
-    // Eigen::MatrixXd edge_rows;
-    // edge_rows.resize(2,3);
-    // while (1) {
-    //     int tricount = 0;
-    //     Eigen::MatrixXi skeds;
-    //     skeds.resize(0,2);
-    //     Eigen::MatrixXd skcst;
-    //     skcst.resize(0,1);
+    while (1) {
+        int tricount = 0;
+        Eigen::MatrixXi skeds;
+        skeds.resize(0,2);
+        Eigen::MatrixXd skcst;
+        skcst.resize(0,1);
 
-    //     for (int i=0; i<SSD.skelver.rows(); i++) {
-    //         ec_neighs.clear();
-    //         for (int col=0; col<Adj.cols(); ++col) {
-    //             if (Adj(i,col) == 1 && col>i) {
-    //                 ec_neighs.push_back(col);
-    //             }
-    //         }
-    //         std::sort(ec_neighs.begin(), ec_neighs.end());
+        // For each vertex...
+        for (int i=0; i<SSD.skelver.rows(); i++) {
+            ec_neighs.clear();
 
-    //         for (int j=0; j<(int)ec_neighs.size(); j++) {
-    //             for (int k=j+1; k<(int)ec_neighs.size(); k++) {
-    //                 if (Adj(ec_neighs[j], ec_neighs[k]) == 1) {
-    //                     tricount++;
-    //                     skeds.conservativeResize(skeds.rows()+1, skeds.cols()); // add one row
-    //                     skeds(skeds.rows()-1, 0) = i;
-    //                     skeds(skeds.rows()-1, 1) = ec_neighs[j];
+            for (int col=0; col<Adj.cols(); col++) {
+                if (Adj(i,col) == 1 && col>i) {
+                    ec_neighs.push_back(col);
+                }
+            }
+            std::sort(ec_neighs.begin(), ec_neighs.end());
+            // Determine trianlges 
+            for (int j=0; j<(int)ec_neighs.size(); j++) {
 
-    //                     skcst.conservativeResize(skcst.rows()+1, skcst.cols()); 
-    //                     skcst(skcst.rows()-1, 0) = (SSD.skelver.row(i) - SSD.skelver.row(ec_neighs[j])).norm();
+                for (int k=j+1; k<(int)ec_neighs.size(); k++) {
 
-    //                     skeds.conservativeResize(skeds.rows()+1, skeds.cols());
-    //                     skeds(skeds.rows()-1, 0) = ec_neighs[j];
-    //                     skeds(skeds.rows()-1, 1) = ec_neighs[k];
+                    if (Adj(ec_neighs[j], ec_neighs[k]) == 1) {
+                        tricount++; //triangle counter
 
-    //                     skcst.conservativeResize(skcst.rows()+1, skcst.cols());
-    //                     skcst(skcst.rows()-1, 0) = (SSD.skelver.row(ec_neighs[i]) - SSD.skelver.row(ec_neighs[k])).norm();
+                        skeds.conservativeResize(skeds.rows()+1, skeds.cols()); // add one row
+                        skeds(skeds.rows()-1, 0) = i;
+                        skeds(skeds.rows()-1, 1) = ec_neighs[j];
 
-    //                     skeds.conservativeResize(skeds.rows()+1, skeds.cols());
-    //                     skeds(skeds.rows()-1, 0) = ec_neighs[k];
-    //                     skeds(skeds.rows()-1, 1) = i;
+                        skcst.conservativeResize(skcst.rows()+1, skcst.cols()); 
+                        skcst(skcst.rows()-1, 0) = (SSD.skelver.row(i) - SSD.skelver.row(ec_neighs[j])).norm();
 
-    //                     skcst.conservativeResize(skcst.rows()+1, skcst.cols());
-    //                     skcst(skcst.rows()-1, 0) = (SSD.skelver.row(ec_neighs[k]) - SSD.skelver.row(i)).norm();
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     if (tricount == 0) break;
+                        skeds.conservativeResize(skeds.rows()+1, skeds.cols());
+                        skeds(skeds.rows()-1, 0) = ec_neighs[j];
+                        skeds(skeds.rows()-1, 1) = ec_neighs[k];
 
-    //     Eigen::MatrixXd::Index minRow, minCol;
-    //     skcst.minCoeff(&minRow, &minCol);
-    //     int idx = minRow;
-    //     Eigen::Vector2i edge = skeds.row(idx);
+                        skcst.conservativeResize(skcst.rows()+1, skcst.cols());
+                        skcst(skcst.rows()-1, 0) = (SSD.skelver.row(ec_neighs[j]) - SSD.skelver.row(ec_neighs[k])).norm();
 
-    //     edge_rows.row(0) = SSD.skelver.row(edge(0));
-    //     edge_rows.row(1) = SSD.skelver.row(edge(1));
-    //     SSD.skelver.row(edge(0)) = edge_rows.colwise().mean();
-    //     SSD.skelver.row(edge(1)).setConstant(std::numeric_limits<double>::quiet_NaN());
+                        skeds.conservativeResize(skeds.rows()+1, skeds.cols());
+                        skeds(skeds.rows()-1, 0) = ec_neighs[k];
+                        skeds(skeds.rows()-1, 1) = i;
 
-    //     for (int k=0; k<Adj.rows(); k++) {
-    //         if (Adj(edge(1), k) == 1) {
-    //             Adj(edge(0), k) = 1;
-    //             Adj(k, edge(0)) = 1;
-    //         }
-    //     }
+                        skcst.conservativeResize(skcst.rows()+1, skcst.cols());
+                        skcst(skcst.rows()-1, 0) = (SSD.skelver.row(ec_neighs[k]) - SSD.skelver.row(i)).norm();
+                    }
+                }
+            }
+        }
 
-    //     Adj.row(edge(1)) = Eigen::MatrixXi::Zero(1, Adj.cols());
-    //     Adj.row(edge(1)) = Eigen::MatrixXi::Zero(Adj.rows(), 1);
+        if (tricount == 0) {
+            break;
+        }
 
-    //     for (int r=0; r<SSD.corresp.rows(); r++) {
-    //         if (SSD.corresp(r,0) == (double)edge(1)) {
-    //             SSD.corresp(r,0) = (double)edge(0);
-    //         }
-    //     }
-    // }
-    // SSD.skeladj = Adj;
+        Eigen::MatrixXd::Index minRow, minCol;
+        skcst.minCoeff(&minRow, &minCol);
+        int idx = minRow;
+        Eigen::Vector2i edge = skeds.row(idx);
+
+        edge_rows.row(0) = SSD.skelver.row(edge(0));
+        edge_rows.row(1) = SSD.skelver.row(edge(1));
+        SSD.skelver.row(edge(0)) = edge_rows.colwise().mean();
+        SSD.skelver.row(edge(1)).setConstant(std::numeric_limits<double>::quiet_NaN());
+
+        for (int k=0; k<Adj.rows(); k++) {
+            if (Adj(edge(1), k) == 1) {
+
+                Adj(edge(0), k) = 1;
+                Adj(k, edge(0)) = 1;
+            }
+        }
+
+        Adj.row(edge(1)).setZero();
+        Adj.col(edge(1)).setZero(); 
+        for (int r=0; r<SSD.corresp.rows(); r++) {
+            if (SSD.corresp(r,0) == (double)edge(1)) {
+                SSD.corresp(r,0) = (double)edge(0);
+            }
+        }
+
+    }
+    SSD.skeladj = Adj;
 }
+
+void RosaMain::recenter() {
+    Extra_Del ed_rr;
+    std::vector<int> deleted_vertice_idxs, idxs;
+    Eigen::MatrixXi ne_idxs, d_idxs;
+    Eigen::MatrixXd ne_idxs_d, d_idxs_d, extract_pts, extract_nrs;
+    Eigen::Vector3d proj_center, eucl_center, fuse_center;
+    Eigen::MatrixXd temp_skelver, temp_skeladj_d, temp_skeladj_d2;
+
+    for (int i=0; i<SSD.skelver.rows(); i++) {
+        idxs.clear();
+        for (int j=0; j<SSD.corresp.rows(); j++) {
+            if (SSD.corresp(j,0) == (double)i) {
+                idxs.push_back(j);
+            }
+        }
+
+        if (idxs.size() < 3) {
+            deleted_vertice_idxs.push_back(i);
+        }
+        else {
+            ne_idxs = Eigen::Map<Eigen::MatrixXi>(idxs.data(), idxs.size(), 1);
+            ne_idxs_d = ne_idxs.cast<double>();
+            extract_pts = ed_rr.rows_ext_M(ne_idxs_d, SSD.pts_matrix);
+            extract_nrs = ed_rr.rows_ext_M(ne_idxs_d, SSD.nrs_matrix);
+            proj_center = closest_projection_point(extract_pts, extract_nrs);
+
+            if (abs(proj_center(0)) < 1 && abs(proj_center(1)) < 1 && abs(proj_center(2)) < 1) {
+                eucl_center = extract_pts.colwise().mean();
+                fuse_center = alpha_recenter * proj_center + (1 -  alpha_recenter)*eucl_center;
+                SSD.skelver(i,0) = fuse_center(0);
+                SSD.skelver(i,1) = fuse_center(1);
+                SSD.skelver(i,2) = fuse_center(2);
+            }
+        }
+    }
+
+    int del_size = deleted_vertice_idxs.size();
+    d_idxs = Eigen::Map<Eigen::MatrixXi>(deleted_vertice_idxs.data(), deleted_vertice_idxs.size(), 1);
+    d_idxs_d = d_idxs.cast<double>();
+    temp_skeladj_d = SSD.skeladj.cast<double>();
+    Eigen::MatrixXd fill = Eigen::MatrixXd::Zero(del_size, SSD.skeladj.cols());
+
+    temp_skelver = ed_rr.rows_del_M(d_idxs_d, SSD.skelver);
+    temp_skeladj_d = ed_rr.rows_del_M(d_idxs_d, temp_skeladj_d);
+    temp_skeladj_d2.resize(SSD.skeladj.cols(), SSD.skeladj.cols());
+    temp_skeladj_d2 << temp_skeladj_d, fill;
+    temp_skeladj_d2 = ed_rr.cols_del_M(d_idxs_d, temp_skeladj_d2);
+    SSD.skelver = temp_skelver;
+    SSD.skeladj = temp_skeladj_d2.block(0, 0, temp_skeladj_d2.cols(), temp_skeladj_d2.cols()).cast<int>();
+
+    SSD.vertices = SSD.skelver;
+    SSD.edges.resize(0,2);
+    for (int i=0; i<SSD.skeladj.rows(); i++) {
+        for (int j=0; j<SSD.skeladj.cols(); j++) {
+            if (SSD.skeladj(i,j) == 1 && i<j) {
+                SSD.edges.conservativeResize(SSD.edges.rows()+1, SSD.edges.cols());
+                SSD.edges(SSD.edges.rows()-1, 0) = i;
+                SSD.edges(SSD.edges.rows()-1, 1) = j;
+            }
+        }
+    }
+}
+
+void RosaMain::restore_scale() {
+    SSD.rosa_pts->clear();
+    for (int i=0; i<(int)SSD.vertices.rows(); i++) {
+        pcl::PointXYZ pt;
+        pt.x = SSD.vertices(i,0) * norm_scale + centroid(0);
+        pt.y = SSD.vertices(i,1) * norm_scale + centroid(1);
+        pt.z = SSD.vertices(i,2) * norm_scale + centroid(2);
+        SSD.rosa_pts->points.push_back(pt);
+    }
+}
+
+
+
+
+
+// void RosaMain::graph_decomposition() {
+//     std::deque<int>().swap(SSD.joint);
+//     SSD.degrees.resize(SSD.skeladj.rows(), 1);
+//     int deg;
+//     Eigen::VectorXi temp_row;
+//     std::list<int> temp_nodes;
+
+//     for (int i=0; i<SSD.skeladj.rows(); i++) {
+//         std::list<int>().swap(temp_nodes);
+//         deg = 0;
+//         for (int j=0; j<SSD.skeladj.cols(); j++) {
+//             if (SSD.skeladj(i,j) == 1 && i != j) {
+//                 temp_nodes.push_back(j);
+//                 deg++;
+//             }
+//         }
+//         SSD.graph.push_back(temp_nodes);
+//         SSD.degrees(i,0) = deg;
+//         if (deg >= 3) {
+//             SSD.joint.push_back(i);
+//         }
+//     }
+
+//     if ((int)SSD.joint.size() == 0) {
+//         for (int i=0; i<SSD.skeladj.rows(); i++) {
+//             if (SSD.degrees(i,0) == 1) {
+//                 SSD.joint.push_back(i);
+//                 break;
+//             }
+//         }
+//     }
+
+//     /* Tree and DFS-decomposition */
+//     std::vector<std::vector<int>>().swap(SSD.branches);
+//     SSD.visited.resize(SSD.graph.size(), false);
+
+//     for (int j=0; j<(int)SSD.joint.size(); j++) {
+//         dfs(SSD.joint[j]);
+//     }
+
+//     std::vector<std::vector<int>> temp_branches;
+//     for (int i=0; i<(int)SSD.branches.size(); i++) {
+//         if ((int)SSD.branches[i].size() == 2 && SSD.branches[i].front() == SSD.branches[i].back()) {
+//             continue;
+//         }
+//         else {
+//             temp_branches.push_back(SSD.branches[i]);
+//         }
+//     }
+
+//     std::vector<std::vector<int>>().swap(SSD.branches);
+//     SSD.branches = temp_branches;
+// }
+
+// void RosaMain::inner_decomposition() {
+//     std::vector<std::vector<int>> temp_branches;
+//     std::vector<std::vector<int>> inner_decomp;
+
+//     for (int i=0; i<(int)SSD.branches.size(); i++) {
+//         if (SSD.branches[i].size() <= 2) {
+//             temp_branches.push_back(SSD.branches[i]);
+//         }
+//         else {
+//             inner_decomp = divide_branch(SSD.branches[i]);
+//             for (int j=0; j<(int)inner_decomp.size(); j++) {
+//                 temp_branches.push_back(inner_decomp[j]);
+//             }
+//         }
+//     }
+
+//     SSD.branches.clear();
+//     SSD.branches = temp_branches;
+
+//     std::vector<std::vector<int>> temp_branches_inner;
+//     for (int i=0; i<(int)SSD.branches.size(); i++) {
+//         if ((int)SSD.branches[i].size() == 2 && SSD.branches[i].front() == SSD.branches[i].back()) {
+//             continue;
+//         }
+//         else {
+//             temp_branches_inner.push_back(SSD.branches[i]);
+//         }
+//     }
+
+//     SSD.branches.clear();
+//     SSD.branches = temp_branches_inner;
+// }
 
 void RosaMain::rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals) {
     Eigen::Matrix3d M;
@@ -851,4 +1044,157 @@ int RosaMain::argmax_eigen(Eigen::MatrixXd &x) {
     return idx;
 }
 
+// void RosaMain::dfs(int &v) {
+//     std::list<int>::iterator it;
+//     SSD.visited[v] = true;
+    
+//     int joint = v;
+//     bool exec_flag = false, push_flag = false;
+//     std::vector<int> branch; branch.push_back(joint);
 
+//     std::stack<int> tempStack;
+//     tempStack.push(v);
+//     while(!tempStack.empty())
+//     {
+//       v = tempStack.top();
+//       tempStack.pop();
+//       if (!SSD.visited[v])
+//       {
+//         exec_flag = false;
+//         if (branch.size() == 1)
+//         {
+//           if (v!=joint)
+//             exec_flag = ocr_node(v, SSD.graph[joint]);
+//           else
+//             exec_flag = true;
+//         }
+//         else
+//           exec_flag = true;
+
+//         if (exec_flag)
+//         {
+//           SSD.visited[v] = true;
+//           if (ocr_node(v, SSD.graph[branch.back()]))
+//           {
+//             branch.push_back(v);
+//             if (SSD.degrees(v,0) != 2)
+//             {
+//               SSD.branches.push_back(branch);
+//               std::vector<int>().swap(branch);
+//               branch.push_back(joint);
+//             }
+//             if (SSD.degrees(v,0) > 2)
+//               SSD.visited[v] = false;
+//           }
+//           else
+//           {
+//             branch.push_back(joint);
+//             SSD.branches.push_back(branch);
+//             std::vector<int>().swap(branch);
+//             branch.push_back(joint);
+//             branch.push_back(v);
+//           }
+//         }
+//       }
+      
+//       push_flag = false;
+//       if (v==joint)
+//       {
+//         push_flag = true;
+//       }
+//       else
+//       {
+//         if (SSD.degrees(v,0)<=2)
+//           push_flag = true;
+//       }
+
+//       if (push_flag)
+//       {
+//         for (it = SSD.graph[v].begin(); it != SSD.graph[v].end(); it++)
+//         {
+//           if (!SSD.visited[*it])
+//           {
+//             tempStack.push(*it);
+//           }
+//         }
+//       }
+
+//       if (tempStack.empty() && (SSD.graph[v].front() == joint || SSD.graph[v].back() == joint) && (int)branch.size() > 2)
+//       {
+//         branch.push_back(v);
+//         branch.push_back(joint);
+//         SSD.branches.push_back(branch);
+//         std::vector<int>().swap(branch);
+//       }
+//     }
+// }
+
+// bool RosaMain::ocr_node(int &n, std::list<int> &candidates) {
+//     bool flag = false;
+//     for (int& x:candidates)
+//     {
+//       if (n == x)
+//       {
+//         flag=true;
+//         break;
+//       }
+//     }
+//     return flag;
+// }
+
+// std::vector<std::vector<int>> RosaMain::divide_branch(std::vector<int> &input_branch) {
+//     std::vector<std::vector<int>> divide_set;
+//     std::vector<int> temp_nodes;
+//     Eigen::Vector3d p1, p2, dir;
+//     Eigen::Vector3d p1_ori, p2_ori, dir_ori;
+//     Eigen::Vector3d p_end;
+//     double similarity, length;
+
+//     temp_nodes.push_back(input_branch[0]);
+//     temp_nodes.push_back(input_branch[1]);
+//     p1_ori = SSD.vertices.row(input_branch[0]);
+//     p2_ori = SSD.vertices.row(input_branch[1]);
+//     dir_ori = p2_ori - p1_ori;
+//     length = dir_ori.norm();
+
+//     for (int i=2; i<(int)input_branch.size(); i++) {
+//         p1 = SSD.vertices.row(input_branch[i-1]);
+//         p2 = SSD.vertices.row(input_branch[i]);
+//         dir = p2 - p1;
+//         length += dir.norm();
+//         similarity = abs(acos(dir_ori.dot(dir) / (dir_ori.norm()*dir.norm()+1e-4)) * 180 / M_PI);
+//         similarity = std::min(similarity, 180.0-similarity);
+
+//         if (i== (int)input_branch.size() - 1) {
+//             if (similarity < angle_upper && length < length_upper) {
+//                 temp_nodes.push_back(input_branch[i]);
+//                 divide_set.push_back(temp_nodes);
+//             }
+//             else {
+//                 divide_set.push_back(temp_nodes);
+//                 std::vector<int>().swap(temp_nodes);
+//                 temp_nodes.push_back(input_branch[i-1]);
+//                 temp_nodes.push_back(input_branch[i]);
+//                 divide_set.push_back(temp_nodes);
+//             }
+//         }
+//         else {
+//             if (similarity < angle_upper && length < length_upper) {
+//                 temp_nodes.push_back(input_branch[i]);
+//                 p_end = p2;
+//                 dir_ori = p_end - p1_ori;
+//             }
+//             else {
+//                 divide_set.push_back(temp_nodes);
+//                 std::vector<int>().swap(temp_nodes);
+//                 temp_nodes.push_back(input_branch[i-1]);
+//                 temp_nodes.push_back(input_branch[i]);
+//                 p1_ori = SSD.vertices.row(input_branch[i-1]);
+//                 p2_ori = SSD.vertices.row(input_branch[i]);
+//                 dir_ori = p2_ori - p1_ori;
+//                 length = dir_ori.norm();
+//             }
+//         }
+//     }
+//     return divide_set;
+//  }

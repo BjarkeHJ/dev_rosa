@@ -3,6 +3,8 @@
 
 #include <iostream>
 #include <chrono>
+#include <deque>
+#include <stack>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -78,6 +80,16 @@ struct SkeletonDecomposition
     Eigen::MatrixXd skelver;
     Eigen::MatrixXd corresp;
     Eigen::MatrixXi skeladj;
+    Eigen::MatrixXd vertices;
+    Eigen::MatrixXi edges;
+    Eigen::MatrixXi degrees;
+    std::deque<int> joint;
+    std::vector<std::list<int>> graph;
+    std::vector<std::vector<int>> branches;
+    std::vector<bool> visited;
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr rosa_pts;
+
 };
 
 
@@ -89,6 +101,7 @@ public:
 
     /* Data */
     pcl::PointCloud<pcl::PointXYZ>::Ptr debug_cloud;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr debug_cloud_2;
 
     /* Utils */
     SkeletonDecomposition SSD;
@@ -101,6 +114,12 @@ private:
     void drosa();
     void dcrosa();
     void lineextract();
+    void recenter();
+    void restore_scale();
+
+
+    // void graph_decomposition();
+    // void inner_decomposition();
 
     void rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals);
     Eigen::Matrix3d create_orthonormal_frame(Eigen::Vector3d &v);
@@ -112,6 +131,10 @@ private:
     Eigen::Vector3d symmnormal_smooth(Eigen::MatrixXd& V, Eigen::MatrixXd& w);
     Eigen::Vector3d closest_projection_point(Eigen::MatrixXd& P, Eigen::MatrixXd& V);
     int argmax_eigen(Eigen::MatrixXd &x);
+    void dfs(int &v);
+    bool ocr_node(int &n, std::list<int> &candidates);
+    std::vector<std::vector<int>> divide_branch(std::vector<int> &input_branch);
+
 
     /* Params */
     int ne_KNN; // K normal estimation neighbours
@@ -124,6 +147,9 @@ private:
     int dcrosa_iter; // Number of iteration in dcrosa
     double delta; // Plane slice thickness
     double sample_radius; // Sample radius for line extraction
+    double alpha_recenter; // rosa recentering...
+    double angle_upper; // Upper angle bound for inner decomp...
+    double length_upper; // upper length bound for inner decomp...
 
     /* Data */
     int pcd_size_;
@@ -132,6 +158,7 @@ private:
     Eigen::MatrixXd pset; //Point set
     Eigen::MatrixXd vset; //Vector set
     Eigen::MatrixXd vvar;  //Vector variance
+    pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud;
     pcl::PointCloud<pcl::PointXYZ>::Ptr skeleton_ver_cloud;
     Eigen::MatrixXi adj_before_collapse;
 

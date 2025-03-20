@@ -98,7 +98,7 @@ void RosaNode::run() {
         debug_pub_->publish(db_out);
 
         sensor_msgs::msg::PointCloud2 db_out_2;
-        pcl::toROSMsg(*skel_op->SSD.pts_, db_out_2);
+        pcl::toROSMsg(*skel_op->debug_cloud_2, db_out_2);
         db_out_2.header.frame_id = db_out.header.frame_id;
         db_out_2.header.stamp = db_out.header.stamp;
         debug_pub_2_->publish(db_out_2);
