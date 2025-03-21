@@ -8,6 +8,10 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <pcl_ros/transforms.hpp>
 
 #include <pcl/common/common.h>
 #include <pcl/common/centroid.h>
@@ -116,7 +120,7 @@ private:
     void lineextract();
     void recenter();
     void restore_scale();
-
+    void refine_points();
 
     // void graph_decomposition();
     // void inner_decomposition();
@@ -131,6 +135,7 @@ private:
     Eigen::Vector3d symmnormal_smooth(Eigen::MatrixXd& V, Eigen::MatrixXd& w);
     Eigen::Vector3d closest_projection_point(Eigen::MatrixXd& P, Eigen::MatrixXd& V);
     int argmax_eigen(Eigen::MatrixXd &x);
+
     void dfs(int &v);
     bool ocr_node(int &n, std::list<int> &candidates);
     std::vector<std::vector<int>> divide_branch(std::vector<int> &input_branch);

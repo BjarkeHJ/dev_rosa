@@ -11,8 +11,10 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     node->declare_parameter<int>("dcrosa_iter", 1);
     node->declare_parameter<double>("sample_radius", 0.05);
     node->declare_parameter<double>("alpha", 0.3);
+
     node->declare_parameter<double>("upper_angle_inner", 45.0);
     node->declare_parameter<double>("upper_length_inner", 1.0);
+
     ne_KNN = node->get_parameter("normal_est_KNN").as_int();
     radius_neigh = node->get_parameter("neighbour_radius").as_double();
     nMax = node->get_parameter("max_pts").as_int();
@@ -48,30 +50,20 @@ void RosaMain::main() {
     normalize();
     mahanalobis_mat(radius_neigh);
 
-    std::cout << "Point Cloud Size: " << pcd_size_ << std::endl;
+    // std::cout << "Point Cloud Size: " << pcd_size_ << std::endl;
 
     drosa();
     dcrosa();
     lineextract();
     recenter();
     restore_scale();
-    // graph_decomposition();
-    // inner_decomposition();
 
     debug_cloud->clear();
     debug_cloud = SSD.rosa_pts;
-    std::cout << "Rosa Points Size: " << debug_cloud->points.size() << std::endl;
+    // std::cout << "Rosa Points Size: " << debug_cloud->points.size() << std::endl;
     
     debug_cloud_2->clear();
     debug_cloud_2 = SSD.pts_;
-
-    // for (int i=0; i<SSD.vertices.rows(); i++) {
-    //     pcl::PointXYZ ptt;
-    //     ptt.x = SSD.vertices.row(i)(0);
-    //     ptt.y = SSD.vertices.row(i)(1);
-    //     ptt.z = SSD.vertices.row(i)(2);
-    //     debug_cloud_2->points.push_back(ptt);
-    // }
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end - start;
@@ -347,6 +339,7 @@ void RosaMain::dcrosa() {
                 newpset.row(i) = pset.row(i); // do nothing...
             }
         }
+
         pset = newpset;
 
         /* Shrinking */
@@ -681,16 +674,22 @@ void RosaMain::recenter() {
 }
 
 void RosaMain::restore_scale() {
-    SSD.rosa_pts->clear();
+    pcl::PointCloud<pcl::PointXYZ>::Ptr temp_cloud(new pcl::PointCloud<pcl::PointXYZ>);
     for (int i=0; i<(int)SSD.vertices.rows(); i++) {
         pcl::PointXYZ pt;
         pt.x = SSD.vertices(i,0) * norm_scale + centroid(0);
         pt.y = SSD.vertices(i,1) * norm_scale + centroid(1);
         pt.z = SSD.vertices(i,2) * norm_scale + centroid(2);
-        SSD.rosa_pts->points.push_back(pt);
+        temp_cloud->points.push_back(pt);
     }
+    SSD.rosa_pts = temp_cloud;
 }
 
+void RosaMain::refine_points() {
+    /* TODO: Refinement of ROSA point based on history and general direction */
+    // Angle deviation constraint (branches)
+
+}
 
 
 

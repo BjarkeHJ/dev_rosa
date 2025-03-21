@@ -12,28 +12,31 @@ set(EXEC_NAME rosa_exec)
 # ROS2 Dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
 
 # Dependencies list
 set(dependencies
     rclcpp
-    rclcpp_components
     sensor_msgs
+    tf2_geometry_msgs
+    tf2_ros
     pcl_ros
     pcl_conversions
     )
 
 # Other libraries
 find_package(Eigen3 REQUIRED)
-find_package(PCL REQUIRED)
+find_package(PCL 1.12 REQUIRED)
 
 add_executable(${EXEC_NAME}
                 src/rosa_exec.cpp
                 src/rosa_main.cpp
-                src/Extra_Del.cpp)
+                src/Extra_Del.cpp
+                src/global_skel.cpp)
 
 target_include_directories(${EXEC_NAME} PUBLIC
                             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -45,6 +48,7 @@ target_link_libraries(${EXEC_NAME} ${PCL_LIBRARIES} Eigen3::Eigen)
 ament_target_dependencies(${EXEC_NAME} ${dependencies})
 
 install(TARGETS ${EXEC_NAME} DESTINATION lib/${PROJECT_NAME})
+
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
