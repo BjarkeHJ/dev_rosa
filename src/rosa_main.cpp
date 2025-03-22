@@ -350,7 +350,7 @@ void RosaMain::dcrosa() {
         // Confidence calc
         Eigen::VectorXd conf = Eigen::VectorXd::Zero(pset.rows()); // zero initialized confidence vector
         newpset = pset; 
-        double CONFIDENCE_TH = 0.5;
+        double CONFIDENCE_TH = 0.1; // Originally 0.5
 
         for (int i=0; i<pcd_size_; i++) {
             std::vector<int> pt_idx(k_KNN);
@@ -595,7 +595,6 @@ void RosaMain::lineextract() {
                 SSD.corresp(r,0) = (double)edge(0);
             }
         }
-
     }
     SSD.skeladj = Adj;
 }
