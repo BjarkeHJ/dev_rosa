@@ -33,6 +33,7 @@ private:
     int scan_counter = 0;
     pcl::PointCloud<pcl::PointXYZ>::Ptr current_pcd;
     pcl::PointCloud<pcl::PointXYZ>::Ptr batch_pcd;
+    geometry_msgs::msg::TransformStamped curr_tf;
 
     /* Utils */
     std::shared_ptr<RosaMain> skel_op;
@@ -66,7 +67,7 @@ void RosaNode::init_modules() {
     skel_op.reset(new RosaMain);
     GS.reset(new GlobSkel);
     skel_op->init(shared_from_this());
-    GS->init(shared_from_this(), tf_buffer_);
+    GS->init(shared_from_this());
     init_flag = true;
 }
 
@@ -85,14 +86,29 @@ void RosaNode::set_cloud() {
     if (!init_flag) init_modules(); // Initialize modules on first call
     if (skel_op->SSD.pts_ == nullptr) return; // Handle startup synch
 
+    // Set transform between lidar_frame and World
+    try {
+        curr_tf = tf_buffer_->lookupTransform("World", "lidar_frame", tf2::TimePointZero);
+    }
+    catch (const tf2::TransformException &ex) {
+        RCLCPP_ERROR(this->get_logger(), "Transform Lookup Failed: %s", ex.what());
+        return;
+    }
+    
+    // Set current pointcloud if not empty
+    if (batch_pcd->empty()) return;
     pcl::copyPointCloud(*batch_pcd, *skel_op->SSD.pts_);
     run_flag = true; // Ready to run ROSA algorithm
 }
 
 void RosaNode::run() {
     if (run_flag) {
+        run_flag = false;
+
         skel_op->main(); // Run main ROSA points algorithm
-        GS->update_skel(); // Update current structure skeleton... 
+        GS->update_skel(skel_op->getRosaPoints(), curr_tf); // Update current structure skeleton... 
+
+        RCLCPP_INFO(this->get_logger(), "ROSA Skeleton size: %ld", GS->global_skeleton->points.size());
 
         // Temp: Debugger publisher - Specify pointcloud quantity to visualize in Rviz2...
         sensor_msgs::msg::PointCloud2 db_out;
@@ -108,11 +124,10 @@ void RosaNode::run() {
         // db_out_2.header.stamp = db_out.header.stamp;
         db_out_2.header.stamp = this->get_clock()->now();
         debug_pub_2_->publish(db_out_2);
-
-        // Set flag to allow next cloud...
-        run_flag = false;
     }
 }
+
+
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);

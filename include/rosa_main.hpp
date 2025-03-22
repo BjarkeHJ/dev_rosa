@@ -102,6 +102,7 @@ public:
     /* Functions */
     void init(std::shared_ptr<rclcpp::Node> node);
     void main();
+    pcl::PointCloud<pcl::PointXYZ>::ConstPtr getRosaPoints() const;
 
     /* Data */
     pcl::PointCloud<pcl::PointXYZ>::Ptr debug_cloud;
@@ -120,10 +121,6 @@ private:
     void lineextract();
     void recenter();
     void restore_scale();
-    void refine_points();
-
-    // void graph_decomposition();
-    // void inner_decomposition();
 
     void rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals);
     Eigen::Matrix3d create_orthonormal_frame(Eigen::Vector3d &v);
@@ -136,16 +133,16 @@ private:
     Eigen::Vector3d closest_projection_point(Eigen::MatrixXd& P, Eigen::MatrixXd& V);
     int argmax_eigen(Eigen::MatrixXd &x);
 
-    void dfs(int &v);
-    bool ocr_node(int &n, std::list<int> &candidates);
-    std::vector<std::vector<int>> divide_branch(std::vector<int> &input_branch);
-
+    // void dfs(int &v);
+    // bool ocr_node(int &n, std::list<int> &candidates);
+    // std::vector<std::vector<int>> divide_branch(std::vector<int> &input_branch);
 
     /* Params */
     int ne_KNN; // K normal estimation neighbours
     double radius_neigh; // Radius for mahanalobis neighbour search
     double th_mah; // Mahanalobis distance threshold
     int nMax; // Maximum number of points in each point cloud
+    int nMin; // Minimum ...
     double leaf_size_ds;
     int k_KNN; // Number of neighbours in surface-neighbour search (drosa / dcrosa)
     int drosa_iter; // Number of iteration in drosa
@@ -153,8 +150,9 @@ private:
     double delta; // Plane slice thickness
     double sample_radius; // Sample radius for line extraction
     double alpha_recenter; // rosa recentering...
-    double angle_upper; // Upper angle bound for inner decomp...
-    double length_upper; // upper length bound for inner decomp...
+
+    // double angle_upper; // Upper angle bound for inner decomp...
+    // double length_upper; // upper length bound for inner decomp...
 
     /* Data */
     int pcd_size_;

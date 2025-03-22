@@ -5,6 +5,7 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     node->declare_parameter<int>("normal_est_KNN", 10);
     node->declare_parameter<double>("neighbour_radius", 0.1);
     node->declare_parameter<int>("max_pts", 1000);
+    node->declare_parameter<int>("min_pts", 50);
     node->declare_parameter<int>("neighbour_KNN", 6);
     node->declare_parameter<int>("drosa_iter", 1);
     node->declare_parameter<double>("delta", 0.01);
@@ -12,20 +13,16 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     node->declare_parameter<double>("sample_radius", 0.05);
     node->declare_parameter<double>("alpha", 0.3);
 
-    node->declare_parameter<double>("upper_angle_inner", 45.0);
-    node->declare_parameter<double>("upper_length_inner", 1.0);
-
     ne_KNN = node->get_parameter("normal_est_KNN").as_int();
     radius_neigh = node->get_parameter("neighbour_radius").as_double();
     nMax = node->get_parameter("max_pts").as_int();
+    nMin = node->get_parameter("min_pts").as_int();
     k_KNN = node->get_parameter("neighbour_KNN").as_int();
     drosa_iter = node->get_parameter("drosa_iter").as_int();
     delta = node->get_parameter("delta").as_double();
     dcrosa_iter = node->get_parameter("dcrosa_iter").as_int();
     sample_radius = node->get_parameter("sample_radius").as_double();
     alpha_recenter = node->get_parameter("alpha").as_double();
-    angle_upper = node->get_parameter("upper_angle_inner").as_double();
-    length_upper = node->get_parameter("upper_length_inner").as_double();
 
     /* Initialize data structures */
     SSD.pts_.reset(new pcl::PointCloud<pcl::PointXYZ>);
@@ -42,28 +39,24 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
 }
 
 void RosaMain::main() {
-    if (SSD.pts_->empty()) return;
-    
     auto start = std::chrono::high_resolution_clock::now();
     
     pcd_size_ = SSD.pts_->points.size();
     normalize();
+    if (pcd_size_ < nMin) return; // Too few points to reliably compute ROSA pts
     mahanalobis_mat(radius_neigh);
-
-    // std::cout << "Point Cloud Size: " << pcd_size_ << std::endl;
-
     drosa();
     dcrosa();
     lineextract();
     recenter();
     restore_scale();
 
-    debug_cloud->clear();
-    debug_cloud = SSD.rosa_pts;
+    // debug_cloud->clear();
+    // debug_cloud = SSD.rosa_pts;
     // std::cout << "Rosa Points Size: " << debug_cloud->points.size() << std::endl;
     
     debug_cloud_2->clear();
-    debug_cloud_2 = SSD.pts_;
+    debug_cloud_2 = SSD.rosa_pts;
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end - start;
@@ -100,14 +93,12 @@ void RosaMain::normalize() {
 
     /* Dynamic Voxel Grid Downsampling */
     leaf_size_ds = 0.01;
-    int temp=0;
     while (pcd_size_ > nMax) {
         vgf.setInputCloud(SSD.cloud_w_normals);
         vgf.setLeafSize(leaf_size_ds, leaf_size_ds, leaf_size_ds);
         vgf.filter(*SSD.cloud_w_normals);
         pcd_size_ = SSD.cloud_w_normals->points.size();
         if (pcd_size_ <= nMax) break;
-        temp++;
         leaf_size_ds += 0.001;
     }
 
@@ -140,7 +131,6 @@ void RosaMain::mahanalobis_mat(double &radius_r) {
     /* Neighbour searhc based on correlation between neighbouring normal vectors */
     SSD.neighs.clear();
     SSD.neighs.resize(pcd_size_);
-
     pcl::KdTreeFLANN<pcl::PointXYZ> tree;
     tree.setInputCloud(SSD.pts_);
 
@@ -685,102 +675,6 @@ void RosaMain::restore_scale() {
     SSD.rosa_pts = temp_cloud;
 }
 
-void RosaMain::refine_points() {
-    /* TODO: Refinement of ROSA point based on history and general direction */
-    // Angle deviation constraint (branches)
-
-}
-
-
-
-
-// void RosaMain::graph_decomposition() {
-//     std::deque<int>().swap(SSD.joint);
-//     SSD.degrees.resize(SSD.skeladj.rows(), 1);
-//     int deg;
-//     Eigen::VectorXi temp_row;
-//     std::list<int> temp_nodes;
-
-//     for (int i=0; i<SSD.skeladj.rows(); i++) {
-//         std::list<int>().swap(temp_nodes);
-//         deg = 0;
-//         for (int j=0; j<SSD.skeladj.cols(); j++) {
-//             if (SSD.skeladj(i,j) == 1 && i != j) {
-//                 temp_nodes.push_back(j);
-//                 deg++;
-//             }
-//         }
-//         SSD.graph.push_back(temp_nodes);
-//         SSD.degrees(i,0) = deg;
-//         if (deg >= 3) {
-//             SSD.joint.push_back(i);
-//         }
-//     }
-
-//     if ((int)SSD.joint.size() == 0) {
-//         for (int i=0; i<SSD.skeladj.rows(); i++) {
-//             if (SSD.degrees(i,0) == 1) {
-//                 SSD.joint.push_back(i);
-//                 break;
-//             }
-//         }
-//     }
-
-//     /* Tree and DFS-decomposition */
-//     std::vector<std::vector<int>>().swap(SSD.branches);
-//     SSD.visited.resize(SSD.graph.size(), false);
-
-//     for (int j=0; j<(int)SSD.joint.size(); j++) {
-//         dfs(SSD.joint[j]);
-//     }
-
-//     std::vector<std::vector<int>> temp_branches;
-//     for (int i=0; i<(int)SSD.branches.size(); i++) {
-//         if ((int)SSD.branches[i].size() == 2 && SSD.branches[i].front() == SSD.branches[i].back()) {
-//             continue;
-//         }
-//         else {
-//             temp_branches.push_back(SSD.branches[i]);
-//         }
-//     }
-
-//     std::vector<std::vector<int>>().swap(SSD.branches);
-//     SSD.branches = temp_branches;
-// }
-
-// void RosaMain::inner_decomposition() {
-//     std::vector<std::vector<int>> temp_branches;
-//     std::vector<std::vector<int>> inner_decomp;
-
-//     for (int i=0; i<(int)SSD.branches.size(); i++) {
-//         if (SSD.branches[i].size() <= 2) {
-//             temp_branches.push_back(SSD.branches[i]);
-//         }
-//         else {
-//             inner_decomp = divide_branch(SSD.branches[i]);
-//             for (int j=0; j<(int)inner_decomp.size(); j++) {
-//                 temp_branches.push_back(inner_decomp[j]);
-//             }
-//         }
-//     }
-
-//     SSD.branches.clear();
-//     SSD.branches = temp_branches;
-
-//     std::vector<std::vector<int>> temp_branches_inner;
-//     for (int i=0; i<(int)SSD.branches.size(); i++) {
-//         if ((int)SSD.branches[i].size() == 2 && SSD.branches[i].front() == SSD.branches[i].back()) {
-//             continue;
-//         }
-//         else {
-//             temp_branches_inner.push_back(SSD.branches[i]);
-//         }
-//     }
-
-//     SSD.branches.clear();
-//     SSD.branches = temp_branches_inner;
-// }
-
 void RosaMain::rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals) {
     Eigen::Matrix3d M;
     Eigen::Vector3d normal_v;
@@ -1043,157 +937,6 @@ int RosaMain::argmax_eigen(Eigen::MatrixXd &x) {
     return idx;
 }
 
-// void RosaMain::dfs(int &v) {
-//     std::list<int>::iterator it;
-//     SSD.visited[v] = true;
-    
-//     int joint = v;
-//     bool exec_flag = false, push_flag = false;
-//     std::vector<int> branch; branch.push_back(joint);
-
-//     std::stack<int> tempStack;
-//     tempStack.push(v);
-//     while(!tempStack.empty())
-//     {
-//       v = tempStack.top();
-//       tempStack.pop();
-//       if (!SSD.visited[v])
-//       {
-//         exec_flag = false;
-//         if (branch.size() == 1)
-//         {
-//           if (v!=joint)
-//             exec_flag = ocr_node(v, SSD.graph[joint]);
-//           else
-//             exec_flag = true;
-//         }
-//         else
-//           exec_flag = true;
-
-//         if (exec_flag)
-//         {
-//           SSD.visited[v] = true;
-//           if (ocr_node(v, SSD.graph[branch.back()]))
-//           {
-//             branch.push_back(v);
-//             if (SSD.degrees(v,0) != 2)
-//             {
-//               SSD.branches.push_back(branch);
-//               std::vector<int>().swap(branch);
-//               branch.push_back(joint);
-//             }
-//             if (SSD.degrees(v,0) > 2)
-//               SSD.visited[v] = false;
-//           }
-//           else
-//           {
-//             branch.push_back(joint);
-//             SSD.branches.push_back(branch);
-//             std::vector<int>().swap(branch);
-//             branch.push_back(joint);
-//             branch.push_back(v);
-//           }
-//         }
-//       }
-      
-//       push_flag = false;
-//       if (v==joint)
-//       {
-//         push_flag = true;
-//       }
-//       else
-//       {
-//         if (SSD.degrees(v,0)<=2)
-//           push_flag = true;
-//       }
-
-//       if (push_flag)
-//       {
-//         for (it = SSD.graph[v].begin(); it != SSD.graph[v].end(); it++)
-//         {
-//           if (!SSD.visited[*it])
-//           {
-//             tempStack.push(*it);
-//           }
-//         }
-//       }
-
-//       if (tempStack.empty() && (SSD.graph[v].front() == joint || SSD.graph[v].back() == joint) && (int)branch.size() > 2)
-//       {
-//         branch.push_back(v);
-//         branch.push_back(joint);
-//         SSD.branches.push_back(branch);
-//         std::vector<int>().swap(branch);
-//       }
-//     }
-// }
-
-// bool RosaMain::ocr_node(int &n, std::list<int> &candidates) {
-//     bool flag = false;
-//     for (int& x:candidates)
-//     {
-//       if (n == x)
-//       {
-//         flag=true;
-//         break;
-//       }
-//     }
-//     return flag;
-// }
-
-// std::vector<std::vector<int>> RosaMain::divide_branch(std::vector<int> &input_branch) {
-//     std::vector<std::vector<int>> divide_set;
-//     std::vector<int> temp_nodes;
-//     Eigen::Vector3d p1, p2, dir;
-//     Eigen::Vector3d p1_ori, p2_ori, dir_ori;
-//     Eigen::Vector3d p_end;
-//     double similarity, length;
-
-//     temp_nodes.push_back(input_branch[0]);
-//     temp_nodes.push_back(input_branch[1]);
-//     p1_ori = SSD.vertices.row(input_branch[0]);
-//     p2_ori = SSD.vertices.row(input_branch[1]);
-//     dir_ori = p2_ori - p1_ori;
-//     length = dir_ori.norm();
-
-//     for (int i=2; i<(int)input_branch.size(); i++) {
-//         p1 = SSD.vertices.row(input_branch[i-1]);
-//         p2 = SSD.vertices.row(input_branch[i]);
-//         dir = p2 - p1;
-//         length += dir.norm();
-//         similarity = abs(acos(dir_ori.dot(dir) / (dir_ori.norm()*dir.norm()+1e-4)) * 180 / M_PI);
-//         similarity = std::min(similarity, 180.0-similarity);
-
-//         if (i== (int)input_branch.size() - 1) {
-//             if (similarity < angle_upper && length < length_upper) {
-//                 temp_nodes.push_back(input_branch[i]);
-//                 divide_set.push_back(temp_nodes);
-//             }
-//             else {
-//                 divide_set.push_back(temp_nodes);
-//                 std::vector<int>().swap(temp_nodes);
-//                 temp_nodes.push_back(input_branch[i-1]);
-//                 temp_nodes.push_back(input_branch[i]);
-//                 divide_set.push_back(temp_nodes);
-//             }
-//         }
-//         else {
-//             if (similarity < angle_upper && length < length_upper) {
-//                 temp_nodes.push_back(input_branch[i]);
-//                 p_end = p2;
-//                 dir_ori = p_end - p1_ori;
-//             }
-//             else {
-//                 divide_set.push_back(temp_nodes);
-//                 std::vector<int>().swap(temp_nodes);
-//                 temp_nodes.push_back(input_branch[i-1]);
-//                 temp_nodes.push_back(input_branch[i]);
-//                 p1_ori = SSD.vertices.row(input_branch[i-1]);
-//                 p2_ori = SSD.vertices.row(input_branch[i]);
-//                 dir_ori = p2_ori - p1_ori;
-//                 length = dir_ori.norm();
-//             }
-//         }
-//     }
-//     return divide_set;
-//  }
+pcl::PointCloud<pcl::PointXYZ>::ConstPtr RosaMain::getRosaPoints() const {
+    return SSD.rosa_pts;
+}
