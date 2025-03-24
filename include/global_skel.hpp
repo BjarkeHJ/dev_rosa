@@ -7,8 +7,8 @@
 #include <pcl/common/common.h>
 #include <pcl/common/transforms.h>
 #include <pcl/octree/octree_search.h>
-#include <pcl/kdtree/kdtree.h>
-#include <pcl/segmentation/extract_clusters.h>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/filters/voxel_grid.h>
 
 
 class GlobSkel {
@@ -20,8 +20,10 @@ public:
 
     /* Data */
     pcl::PointCloud<pcl::PointXYZ>::Ptr global_skeleton;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr debug_cloud;
 
     /* Utils */
+
 
 
 private:
@@ -33,11 +35,14 @@ private:
     pcl::PointCloud<pcl::PointXYZ>::Ptr temp_cloud;
     pcl::PointCloud<pcl::PointXYZ>::Ptr tf_cloud;
     int skel_size;
-    std::vector<std::vector<int>> segments;
+    int new_pts;
+    Eigen::MatrixXd branch_points;
+    Eigen::MatrixXi skel_;
 
     /* Utils */
-    std::shared_ptr<tf2_ros::Buffer> tf_buffer;
     std::unique_ptr<pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>> octree;
+    pcl::KdTreeFLANN<pcl::PointXYZ> kdtree; // kdtree for skeleton refinement
+    pcl::VoxelGrid<pcl::PointXYZ> vgf;
 
 };
 #endif

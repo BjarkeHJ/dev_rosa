@@ -14,6 +14,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
@@ -23,6 +24,7 @@ set(dependencies
     rclcpp
     sensor_msgs
     tf2_geometry_msgs
+    visualization_msgs
     tf2_ros
     pcl_ros
     pcl_conversions

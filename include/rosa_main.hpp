@@ -9,6 +9,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <visualization_msgs/msg/marker.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <pcl_ros/transforms.hpp>
@@ -82,18 +84,13 @@ struct SkeletonDecomposition
     std::vector<std::vector<int>> neighs_surf;
 
     Eigen::MatrixXd skelver;
+
     Eigen::MatrixXd corresp;
     Eigen::MatrixXi skeladj;
     Eigen::MatrixXd vertices;
     Eigen::MatrixXi edges;
-    Eigen::MatrixXi degrees;
-    std::deque<int> joint;
-    std::vector<std::list<int>> graph;
-    std::vector<std::vector<int>> branches;
-    std::vector<bool> visited;
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr rosa_pts;
-
 };
 
 
@@ -133,10 +130,6 @@ private:
     Eigen::Vector3d closest_projection_point(Eigen::MatrixXd& P, Eigen::MatrixXd& V);
     int argmax_eigen(Eigen::MatrixXd &x);
 
-    // void dfs(int &v);
-    // bool ocr_node(int &n, std::list<int> &candidates);
-    // std::vector<std::vector<int>> divide_branch(std::vector<int> &input_branch);
-
     /* Params */
     int ne_KNN; // K normal estimation neighbours
     double radius_neigh; // Radius for mahanalobis neighbour search
@@ -151,9 +144,6 @@ private:
     double sample_radius; // Sample radius for line extraction
     double alpha_recenter; // rosa recentering...
 
-    // double angle_upper; // Upper angle bound for inner decomp...
-    // double length_upper; // upper length bound for inner decomp...
-
     /* Data */
     int pcd_size_;
     double norm_scale;
@@ -162,7 +152,6 @@ private:
     Eigen::MatrixXd vset; //Vector set
     Eigen::MatrixXd vvar;  //Vector variance
     pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud;
-    pcl::PointCloud<pcl::PointXYZ>::Ptr skeleton_ver_cloud;
     Eigen::MatrixXi adj_before_collapse;
 
     /* Utils */

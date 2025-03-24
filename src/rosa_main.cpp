@@ -30,7 +30,6 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     SSD.cloud_w_normals.reset(new pcl::PointCloud<pcl::PointNormal>);
     pset_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
     SSD.rosa_pts.reset(new pcl::PointCloud<pcl::PointXYZ>);
-    skeleton_ver_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
 
     debug_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
     debug_cloud_2.reset(new pcl::PointCloud<pcl::PointXYZ>);
@@ -44,6 +43,7 @@ void RosaMain::main() {
     pcd_size_ = SSD.pts_->points.size();
     normalize();
     if (pcd_size_ < nMin) return; // Too few points to reliably compute ROSA pts
+
     mahanalobis_mat(radius_neigh);
     drosa();
     dcrosa();
@@ -51,11 +51,6 @@ void RosaMain::main() {
     recenter();
     restore_scale();
 
-    // debug_cloud->clear();
-    // debug_cloud = SSD.rosa_pts;
-    // std::cout << "Rosa Points Size: " << debug_cloud->points.size() << std::endl;
-    
-    debug_cloud_2->clear();
     debug_cloud_2 = SSD.rosa_pts;
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -350,7 +345,7 @@ void RosaMain::dcrosa() {
         // Confidence calc
         Eigen::VectorXd conf = Eigen::VectorXd::Zero(pset.rows()); // zero initialized confidence vector
         newpset = pset; 
-        double CONFIDENCE_TH = 0.1; // Originally 0.5
+        double CONFIDENCE_TH = 0.5; // Originally 0.5
 
         for (int i=0; i<pcd_size_; i++) {
             std::vector<int> pt_idx(k_KNN);
@@ -382,6 +377,7 @@ void RosaMain::dcrosa() {
     }
 }
 
+// Maybe lineextaction should be performed on the entire incremented skeleton??
 void RosaMain::lineextract() {
     Extra_Del ed_le;
     int outlier = 2;
@@ -399,7 +395,7 @@ void RosaMain::lineextract() {
     for (int i=0; i<pcd_size_; i++) {
         if ((int)SSD.neighs[i].size() <= outlier) {
             // if the point has less than or equal to 2 neighbours it is classified as a bad_sample
-            bad_sample(i,0) = 1; // flagged with 1
+            bad_sample(i,0) = 1;
         }
     }
 
@@ -415,22 +411,21 @@ void RosaMain::lineextract() {
     pcl::KdTreeFLANN<pcl::PointXYZ> tree;
     tree.setInputCloud(pset_cloud);
     SSD.skelver.resize(0,3);
-    // mindst stores the minimum squared distance from each unassigned point to an assigned point.
+
+    // mindst stores the minimum squared distance from each unassigned point to the nearest assigned skeleton point. 
     Eigen::MatrixXd mindst = Eigen::MatrixXd::Constant(pcd_size_, 1, std::numeric_limits<double>::quiet_NaN()); 
     SSD.corresp = Eigen::MatrixXd::Constant(pcd_size_, 1, -1); // initialized with value -1
 
     // Farthest Point Sampling (FPS) / Skeletonization
     for (int k=0; k<pcd_size_; k++) {
-        if (SSD.corresp(k,0) != -1) continue; // skip already assigned points
-
+        if (SSD.corresp(k,0) != -1) continue; // skip already assigned points - Will only proceed if gaps larger than search radius in ROSA points (after 1st iter)
         mindst(k,0) = 1e8; // set large to ensure update
 
         // run while ANY element in corresp is still -1
         while (!((SSD.corresp.array() != -1).all())) {
-
             int maxIdx = argmax_eigen(mindst); // maxIdx represents the most distant unassigned point
 
-            if (mindst(maxIdx,0) == 0) break; // If the largest distance value is zero...
+            if (mindst(maxIdx,0) == 0) break; // If the largest distance value is zero... I.e. all remaining unassinged points are with the radius
             if (!std::isnan(mindst(maxIdx, 0)) && mindst(maxIdx,0) == 0) break;
 
             // The current search point
@@ -448,38 +443,28 @@ void RosaMain::lineextract() {
             nIdxs = int_nidxs.cast<double>();
             extract_corresp = ed_le.rows_ext_M(nIdxs, SSD.corresp); // Extract the section corresp according to the indices of the nearest points
 
-            // if these are all different from -1 set the mindst value at maxIdx to 0...
-            // If all neighbours wihtin sample_radius already has been assigned
+            // If all neighbours wihtin sample_radius already has been assigned (neq to -1) the current point is not needed as vertex
             if ((extract_corresp.array() != -1).all()) {
                 mindst(maxIdx,0) = 0;
-                continue; // go to beginning of while loop
+                continue; // Go to loop start
             }
 
-            SSD.skelver.conservativeResize(SSD.skelver.rows()+1, SSD.skelver.cols()); // adds one row - add one vertex point to the skeleton
-            SSD.skelver.row(SSD.skelver.rows()-1) = pset.row(maxIdx); // set new vertice to the point at the farthest distance within the sample_radius
+            // If all neighbours had not been assigned to a corresponding vertex, the current search point is chosen as a new vertex.
+            SSD.skelver.conservativeResize(SSD.skelver.rows()+1, SSD.skelver.cols()); // adds one vertex
+            SSD.skelver.row(SSD.skelver.rows()-1) = pset.row(maxIdx);
 
             // for every point withing the sample_radius
             for (int z=0; z<(int)indxs.size(); z++) {
 
-                // if the distance value at this index is unassigned OR larger than the squared distance to the point
+                // if the distance value at this index is unassigned OR if a previous assignment has a larger distance
+                // the point is assigned to the new vertex
+                // this ensures that every point is assigned to their closest vertex
                 if (std::isnan(mindst(indxs[z],0)) || mindst(indxs[z],0) > radius_squared_distance[z]) {
-                    mindst(indxs[z],0) = radius_squared_distance[z]; // set distance value to the squared distance
-
-                    SSD.corresp(indxs[z], 0) = SSD.skelver.rows() - 1; // sets the corresp value to the number of rows of skelver minus one
-                    // the above line will act as a sorting algorithm for connected points. It will assign 0, 1, 2,..., pcd_size_
+                    mindst(indxs[z],0) = radius_squared_distance[z]; // update minimum distance to closest vertex
+                    SSD.corresp(indxs[z], 0) = SSD.skelver.rows() - 1; // Keeps track of which skeleton vertice each point corresponds to (0, 1, 2, 3...)
                 }
             }
         }
-    }
-
-    // Store in point cloud... (not used)
-    skeleton_ver_cloud->clear();
-    pcl::PointXYZ pt_vertex;
-    for (int r=0; r<(int)SSD.skelver.rows(); r++) {
-        pt_vertex.x = SSD.skelver(r,0);
-        pt_vertex.y = SSD.skelver(r,1);
-        pt_vertex.z = SSD.skelver(r,2);
-        skeleton_ver_cloud->points.push_back(pt_vertex);
     }
 
     int dim = SSD.skelver.rows(); // number of vertices
@@ -487,6 +472,7 @@ void RosaMain::lineextract() {
     Adj = Eigen::MatrixXi::Zero(dim, dim);
     std::vector<int> temp_surf(k_KNN);
     std::vector<int> good_neighs;
+
 
     for (int pIdx=0; pIdx<pcd_size_; pIdx++) {
         temp_surf.clear();
@@ -499,8 +485,9 @@ void RosaMain::lineextract() {
             }
         }
 
-        if (SSD.corresp(pIdx,0) == -1) continue;
+        if (SSD.corresp(pIdx,0) == -1) continue; // Should not happen...
 
+        // For every good neighbour connect them in the adjacency matrix (symmetric)
         for (int nidx=0; nidx<(int)good_neighs.size(); nidx++) {
             if (SSD.corresp(good_neighs[nidx],0) == -1) continue;
             Adj((int)SSD.corresp(pIdx,0), (int)SSD.corresp(good_neighs[nidx],0)) = 1;
@@ -512,53 +499,64 @@ void RosaMain::lineextract() {
     adj_before_collapse = Adj;
 
     /* Edge collapse */
+    // Redundant edges forming triangles are removed...
     std::vector<int> ec_neighs;
     Eigen::MatrixXd edge_rows;
     edge_rows.resize(2,3);
 
     while (1) {
         int tricount = 0;
-        Eigen::MatrixXi skeds;
+        Eigen::MatrixXi skeds; // Vertice involved in triangle
         skeds.resize(0,2);
         Eigen::MatrixXd skcst;
-        skcst.resize(0,1);
+        skcst.resize(0,1); // Lenght of triangle edges
 
         // For each vertex...
         for (int i=0; i<SSD.skelver.rows(); i++) {
             ec_neighs.clear();
 
+            // ... Find connections between other vertices (Only upper triangular matrix col>i)
             for (int col=0; col<Adj.cols(); col++) {
                 if (Adj(i,col) == 1 && col>i) {
                     ec_neighs.push_back(col);
                 }
             }
-            std::sort(ec_neighs.begin(), ec_neighs.end());
-            // Determine trianlges 
-            for (int j=0; j<(int)ec_neighs.size(); j++) {
 
+            // Sorting redundant...
+            // std::sort(ec_neighs.begin(), ec_neighs.end());
+
+            // Determine triangles - Loops through pairs of connected vertices j and k...
+            for (int j=0; j<(int)ec_neighs.size(); j++) {
                 for (int k=j+1; k<(int)ec_neighs.size(); k++) {
 
+                    // If the two vertices also are connected a triangle is found...
                     if (Adj(ec_neighs[j], ec_neighs[k]) == 1) {
-                        tricount++; //triangle counter
-
-                        skeds.conservativeResize(skeds.rows()+1, skeds.cols()); // add one row
+                        tricount++; //triangle counter 
+                        // ADD TRIANGLE EDGES 
+                        // Store the edge between current vertex and the neighbour j.
+                        skeds.conservativeResize(skeds.rows()+1, skeds.cols()); 
                         skeds(skeds.rows()-1, 0) = i;
                         skeds(skeds.rows()-1, 1) = ec_neighs[j];
 
+                        // Store edge length between current vertex and neighbour j.
                         skcst.conservativeResize(skcst.rows()+1, skcst.cols()); 
                         skcst(skcst.rows()-1, 0) = (SSD.skelver.row(i) - SSD.skelver.row(ec_neighs[j])).norm();
 
+                        // Store the edge between the connected vertice pair 
                         skeds.conservativeResize(skeds.rows()+1, skeds.cols());
                         skeds(skeds.rows()-1, 0) = ec_neighs[j];
                         skeds(skeds.rows()-1, 1) = ec_neighs[k];
 
+                        // Store this edge length
                         skcst.conservativeResize(skcst.rows()+1, skcst.cols());
                         skcst(skcst.rows()-1, 0) = (SSD.skelver.row(ec_neighs[j]) - SSD.skelver.row(ec_neighs[k])).norm();
 
+                        // Store the edge between the current vertex and neighbour k
                         skeds.conservativeResize(skeds.rows()+1, skeds.cols());
                         skeds(skeds.rows()-1, 0) = ec_neighs[k];
                         skeds(skeds.rows()-1, 1) = i;
 
+                        // And the edge length...
                         skcst.conservativeResize(skcst.rows()+1, skcst.cols());
                         skcst(skcst.rows()-1, 0) = (SSD.skelver.row(ec_neighs[k]) - SSD.skelver.row(i)).norm();
                     }
@@ -566,36 +564,41 @@ void RosaMain::lineextract() {
             }
         }
 
+        // Continue loop as long as triangles are found
         if (tricount == 0) {
             break;
         }
 
+        // Determine smallest edge...
         Eigen::MatrixXd::Index minRow, minCol;
-        skcst.minCoeff(&minRow, &minCol);
+        skcst.minCoeff(&minRow, &minCol); // Output minimum edge length
         int idx = minRow;
-        Eigen::Vector2i edge = skeds.row(idx);
+        Eigen::Vector2i edge = skeds.row(idx); // get edge connections
 
+        // Set actual vertex connections 
         edge_rows.row(0) = SSD.skelver.row(edge(0));
         edge_rows.row(1) = SSD.skelver.row(edge(1));
-        SSD.skelver.row(edge(0)) = edge_rows.colwise().mean();
-        SSD.skelver.row(edge(1)).setConstant(std::numeric_limits<double>::quiet_NaN());
+        SSD.skelver.row(edge(0)) = edge_rows.colwise().mean(); // First vertex set as the mean of the two 
+        SSD.skelver.row(edge(1)).setConstant(std::numeric_limits<double>::quiet_NaN()); // Set second vertice invalid...
 
+        // Update adjacency matrix
         for (int k=0; k<Adj.rows(); k++) {
             if (Adj(edge(1), k) == 1) {
-
                 Adj(edge(0), k) = 1;
                 Adj(k, edge(0)) = 1;
             }
         }
-
         Adj.row(edge(1)).setZero();
         Adj.col(edge(1)).setZero(); 
+
+        // Update corresp matrix to ensure that the points assigned to removed vertex are assigned to the new merged vertex...
         for (int r=0; r<SSD.corresp.rows(); r++) {
             if (SSD.corresp(r,0) == (double)edge(1)) {
                 SSD.corresp(r,0) = (double)edge(0);
             }
         }
     }
+    // Final adjenceny matrix of the skeleton...
     SSD.skeladj = Adj;
 }
 
@@ -607,18 +610,21 @@ void RosaMain::recenter() {
     Eigen::Vector3d proj_center, eucl_center, fuse_center;
     Eigen::MatrixXd temp_skelver, temp_skeladj_d, temp_skeladj_d2;
 
+    // For each vertex
     for (int i=0; i<SSD.skelver.rows(); i++) {
         idxs.clear();
         for (int j=0; j<SSD.corresp.rows(); j++) {
+            // Extract the indices of the points corresponding to the ith vertex
             if (SSD.corresp(j,0) == (double)i) {
                 idxs.push_back(j);
             }
         }
-
         if (idxs.size() < 3) {
+            // If a vertex has less than 3 assigned points -> Remove this vertex (will also remove previous set NaNs)
             deleted_vertice_idxs.push_back(i);
         }
         else {
+            
             ne_idxs = Eigen::Map<Eigen::MatrixXi>(idxs.data(), idxs.size(), 1);
             ne_idxs_d = ne_idxs.cast<double>();
             extract_pts = ed_rr.rows_ext_M(ne_idxs_d, SSD.pts_matrix);
@@ -627,29 +633,31 @@ void RosaMain::recenter() {
 
             if (abs(proj_center(0)) < 1 && abs(proj_center(1)) < 1 && abs(proj_center(2)) < 1) {
                 eucl_center = extract_pts.colwise().mean();
-                fuse_center = alpha_recenter * proj_center + (1 -  alpha_recenter)*eucl_center;
+                fuse_center = alpha_recenter * proj_center + (1 - alpha_recenter)*eucl_center;
                 SSD.skelver(i,0) = fuse_center(0);
                 SSD.skelver(i,1) = fuse_center(1);
                 SSD.skelver(i,2) = fuse_center(2);
             }
         }
     }
-
+    
+    // Remove invalide vertices
     int del_size = deleted_vertice_idxs.size();
     d_idxs = Eigen::Map<Eigen::MatrixXi>(deleted_vertice_idxs.data(), deleted_vertice_idxs.size(), 1);
     d_idxs_d = d_idxs.cast<double>();
     temp_skeladj_d = SSD.skeladj.cast<double>();
     Eigen::MatrixXd fill = Eigen::MatrixXd::Zero(del_size, SSD.skeladj.cols());
 
-    temp_skelver = ed_rr.rows_del_M(d_idxs_d, SSD.skelver);
+    temp_skelver = ed_rr.rows_del_M(d_idxs_d, SSD.skelver); // 
     temp_skeladj_d = ed_rr.rows_del_M(d_idxs_d, temp_skeladj_d);
     temp_skeladj_d2.resize(SSD.skeladj.cols(), SSD.skeladj.cols());
     temp_skeladj_d2 << temp_skeladj_d, fill;
     temp_skeladj_d2 = ed_rr.cols_del_M(d_idxs_d, temp_skeladj_d2);
     SSD.skelver = temp_skelver;
     SSD.skeladj = temp_skeladj_d2.block(0, 0, temp_skeladj_d2.cols(), temp_skeladj_d2.cols()).cast<int>();
-
     SSD.vertices = SSD.skelver;
+
+    // Final edge adjustments..
     SSD.edges.resize(0,2);
     for (int i=0; i<SSD.skeladj.rows(); i++) {
         for (int j=0; j<SSD.skeladj.cols(); j++) {
@@ -663,15 +671,14 @@ void RosaMain::recenter() {
 }
 
 void RosaMain::restore_scale() {
-    pcl::PointCloud<pcl::PointXYZ>::Ptr temp_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    SSD.rosa_pts->clear();
     for (int i=0; i<(int)SSD.vertices.rows(); i++) {
         pcl::PointXYZ pt;
         pt.x = SSD.vertices(i,0) * norm_scale + centroid(0);
         pt.y = SSD.vertices(i,1) * norm_scale + centroid(1);
         pt.z = SSD.vertices(i,2) * norm_scale + centroid(2);
-        temp_cloud->points.push_back(pt);
+        SSD.rosa_pts->points.push_back(pt);
     }
-    SSD.rosa_pts = temp_cloud;
 }
 
 void RosaMain::rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals) {
@@ -939,3 +946,5 @@ int RosaMain::argmax_eigen(Eigen::MatrixXd &x) {
 pcl::PointCloud<pcl::PointXYZ>::ConstPtr RosaMain::getRosaPoints() const {
     return SSD.rosa_pts;
 }
+
+
