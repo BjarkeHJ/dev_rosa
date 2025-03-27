@@ -31,6 +31,7 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     pset_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
     SSD.rosa_pts.reset(new pcl::PointCloud<pcl::PointXYZ>);
 
+    temp_ver_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
     debug_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
     debug_cloud_2.reset(new pcl::PointCloud<pcl::PointXYZ>);
 
@@ -42,7 +43,13 @@ void RosaMain::main() {
     
     pcd_size_ = SSD.pts_->points.size();
     normalize();
-    if (pcd_size_ < nMin) return; // Too few points to reliably compute ROSA pts
+    if (pcd_size_ < nMin) {
+        std::cout << "Point Cloud size below nMin... Skipping..." << std::endl; 
+        return; // Too few points to reliably compute ROSA ptss
+    }
+    debug_cloud = SSD.pts_;
+
+    // After normalization: Ensure density constraint is met in the point cloud. Remove areas of insufficient density
 
     mahanalobis_mat(radius_neigh);
     drosa();
@@ -52,6 +59,7 @@ void RosaMain::main() {
     restore_scale();
 
     debug_cloud_2 = SSD.rosa_pts;
+    // debug_cloud_2 = temp_ver_cloud; // Vertices after FPS
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end - start;
@@ -77,8 +85,8 @@ void RosaMain::normalize() {
     }
     
     /* Normal Estimation */
-    SSD.normals_->clear();
     pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>());
+    SSD.normals_->clear();
     ne.setInputCloud(SSD.pts_);
     ne.setSearchMethod(tree);
     ne.setKSearch(ne_KNN);
@@ -97,6 +105,11 @@ void RosaMain::normalize() {
         leaf_size_ds += 0.001;
     }
 
+    // std::cout << "Cloud size before density check: " << SSD.cloud_w_normals->points.size() << std::endl;
+    // density_check();
+    // std::cout << "Cloud size after density check: " << SSD.cloud_w_normals->points.size() << std::endl;
+    
+    pcd_size_ = SSD.cloud_w_normals->points.size();
     SSD.pts_->clear();
     SSD.normals_->clear();
     SSD.pts_matrix.resize(pcd_size_, 3);
@@ -120,6 +133,28 @@ void RosaMain::normalize() {
         SSD.nrs_matrix(i,1) = nrm.normal_y;
         SSD.nrs_matrix(i,2) = nrm.normal_z;
     }
+}
+
+void RosaMain::density_check() {
+    double res = k_KNN * leaf_size_ds;
+    int min_pts = k_KNN;
+
+    std::map<Eigen::Vector3i, int, Vector3iCompare> voxel_counts;
+    for (const auto &ptt : SSD.cloud_w_normals->points) {
+        Eigen::Vector3i voxel_idx = (ptt.getArray3fMap() / res).cast<int>();
+        voxel_counts[voxel_idx]++;
+    }
+    SSD.cloud_w_normals->points.erase(
+        std::remove_if(SSD.cloud_w_normals->points.begin(), SSD.cloud_w_normals->points.end(),
+                       [&](const pcl::PointNormal &ptt) {
+                            Eigen::Vector3i voxel_idx = (ptt.getArray3fMap() / res).cast<int>();
+                            return voxel_counts[voxel_idx] < min_pts;
+                       }),
+                       SSD.cloud_w_normals->points.end());
+
+    SSD.cloud_w_normals->width = SSD.cloud_w_normals->points.size();
+    SSD.cloud_w_normals->height = 1; // Make it unorganized
+    SSD.cloud_w_normals->is_dense = false; // Mark as not necessarily dense
 }
 
 void RosaMain::mahanalobis_mat(double &radius_r) {
@@ -190,6 +225,7 @@ void RosaMain::drosa() {
     std::vector<int> temp_surf(k_KNN);
     std::vector<float> nn_squared_distance(k_KNN);
     pcl::PointXYZ search_pt_surf;
+
     // Nearest neighbours search...
     surf_kdtree.setInputCloud(SSD.pts_);
     for (int i=0; i<pcd_size_; i++) {
@@ -377,6 +413,9 @@ void RosaMain::dcrosa() {
     }
 }
 
+// Refine local points here... 
+// Do lineextract, recenter etc in global refinement
+
 // Maybe lineextaction should be performed on the entire incremented skeleton??
 void RosaMain::lineextract() {
     Extra_Del ed_le;
@@ -466,6 +505,15 @@ void RosaMain::lineextract() {
             }
         }
     }
+    temp_ver_cloud->clear();
+    for (int i=0; i<(int)SSD.skelver.rows(); i++) {
+        pcl::PointXYZ ptt;
+        ptt.x = SSD.skelver(i,0) * norm_scale + centroid(0);
+        ptt.y = SSD.skelver(i,1) * norm_scale + centroid(1);
+        ptt.z = SSD.skelver(i,2) * norm_scale + centroid(2);
+        temp_ver_cloud->points.push_back(ptt);
+    }
+
 
     int dim = SSD.skelver.rows(); // number of vertices
     Eigen::MatrixXi Adj;
@@ -757,7 +805,7 @@ Eigen::MatrixXd RosaMain::compute_active_samples(int &idx, Eigen::Vector3d &p_cu
     
     std::vector<int> queue;
     queue.reserve(pcd_size_); // Allocate memory 
-    queue.emplace_back(idx); // Insert at then end of queue
+    queue.emplace_back(idx); // Insert at the end of queue
 
     int curr;
     while (!queue.empty()) {
@@ -779,7 +827,7 @@ Eigen::MatrixXd RosaMain::compute_active_samples(int &idx, Eigen::Vector3d &p_cu
 
 void RosaMain::pcloud_isoncut(Eigen::Vector3d& p_cut, Eigen::Vector3d& v_cut, std::vector<int>& isoncut, double*& datas, int& size) {
     DataWrapper data;
-    data.factory(datas, size); // datas size is 3 x size
+    data.factory(datas, size); // datas size is size x 3
 
     std::vector<double> p(3); 
     p[0] = p_cut(0); 
@@ -810,8 +858,9 @@ void RosaMain::distance_query(DataWrapper& data, const std::vector<double>& Pp, 
 }
 
 Eigen::Vector3d RosaMain::compute_symmetrynormal(Eigen::MatrixXd& local_normals) {
-    // This function determines the vector least variance amongst the local_normals. 
+    // This function determines the vector that minimizes the variance amongst the local_normals. 
     // This can be interpreted as the "direction" of the skeleton inside the structure...
+    // The symmetry normal will be the normal vector of the best fit plane of points corresponding to the local_normals
 
     Eigen::Matrix3d M; Eigen::Vector3d vec;
     double alpha = 0.0;

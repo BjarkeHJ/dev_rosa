@@ -114,49 +114,21 @@ void RosaNode::run() {
 
         // Temp: Debugger publisher - Specify pointcloud quantity to visualize in Rviz2...
         sensor_msgs::msg::PointCloud2 db_out;
-        pcl::toROSMsg(*GS->global_skeleton, db_out);
-        db_out.header.frame_id = "World";
+        // pcl::toROSMsg(*GS->global_skeleton, db_out);
+        // db_out.header.frame_id = "World";
+        pcl::toROSMsg(*skel_op->debug_cloud, db_out);
+        db_out.header.frame_id = "lidar_frame";
         db_out.header.stamp = this->get_clock()->now();
         debug_pub_->publish(db_out);
 
         sensor_msgs::msg::PointCloud2 db_out_2;
-        pcl::toROSMsg(*GS->debug_cloud, db_out_2);
-        db_out_2.header.frame_id = "World";
-        // pcl::toROSMsg(*skel_op->debug_cloud_2, db_out_2);
-        // db_out_2.header.frame_id = "lidar_frame";
+        // pcl::toROSMsg(*GS->debug_cloud, db_out_2);
+        // db_out_2.header.frame_id = "World";
+        
+        pcl::toROSMsg(*skel_op->debug_cloud_2, db_out_2);
+        db_out_2.header.frame_id = "lidar_frame";
         db_out_2.header.stamp = this->get_clock()->now();
         debug_pub_2_->publish(db_out_2);
-
-
-    //     visualization_msgs::msg::MarkerArray marker_array;
-    //     int marker_id = 0;
-    //     for (const auto &pt : skel_op->SSD.rosa_w_normals->points) {
-    //         visualization_msgs::msg::Marker marker;
-    //         marker.header.frame_id = "lidar_frame";
-    //         marker.header.stamp = this->get_clock()->now();
-    //         marker.id = marker_id++;
-    //         marker.type = visualization_msgs::msg::Marker::ARROW;
-    //         marker.action = visualization_msgs::msg::Marker::ADD;
-    //         geometry_msgs::msg::Point start, end;
-    //         start.x = pt.x;
-    //         start.y = pt.y;
-    //         start.z = pt.z;
-    //         end.x = pt.x + 1.0*pt.normal_x;
-    //         end.y = pt.y + 1.0*pt.normal_y;
-    //         end.z = pt.z + 1.0*pt.normal_z;
-    //         marker.points.push_back(start);
-    //         marker.points.push_back(end);
-
-    //         marker.scale.x = 0.05;
-    //         marker.scale.y = 0.2;
-    //         marker.scale.z = 0.2;
-    //         marker.color.r = 1.0;
-    //         marker.color.g = 0.0;
-    //         marker.color.b = 0.0;
-    //         marker.color.a = 1.0;
-    //         marker_array.markers.push_back(marker);
-    //     }
-    //     marker_pub_->publish(marker_array);
     }
 }
 

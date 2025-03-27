@@ -5,6 +5,8 @@
 #include <chrono>
 #include <deque>
 #include <stack>
+#include <algorithm>
+#include <map>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -70,6 +72,16 @@ struct Vector3dCompare // lexicographic ordering: return true if v1 is ordered B
     }
 };
 
+struct Vector3iCompare // lexicographic ordering: return true if v1 is ordered BEFORE v2...
+{
+    bool operator()(const Eigen::Vector3i& v1, const Eigen::Vector3i& v2) const {
+        if (v1(0) != v2(0)) return v1(0) < v2(0); // Return if x components differ (False if x1 > x2)
+        if (v1(1) != v2(1)) return v1(1) < v2(1); // Only if x1 = x2 (False if y1 > y2)
+        return v1(2) < v2(2); // Only if y1 = y2
+    }
+};
+
+
 struct SkeletonDecomposition 
 {
     pcl::PointCloud<pcl::PointXYZ>::Ptr pts_;
@@ -111,13 +123,16 @@ public:
 private:
     /* Functions */
     void normalize();
+    void density_check();
     void mahanalobis_mat(double &radius_r);
     double pt_mahalanobis_metric(pcl::PointXYZ &p1, pcl::Normal &v1, pcl::PointXYZ &p2, pcl::Normal &v2, double &range_r);
     void drosa();
     void dcrosa();
+    void vertices_extract();
     void lineextract();
     void recenter();
     void restore_scale();
+    
 
     void rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals);
     Eigen::Matrix3d create_orthonormal_frame(Eigen::Vector3d &v);
@@ -151,6 +166,7 @@ private:
     Eigen::MatrixXd pset; //Point set
     Eigen::MatrixXd vset; //Vector set
     Eigen::MatrixXd vvar;  //Vector variance
+    pcl::PointCloud<pcl::PointXYZ>::Ptr temp_ver_cloud;
     pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud;
     Eigen::MatrixXi adj_before_collapse;
 

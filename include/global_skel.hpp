@@ -8,8 +8,7 @@
 #include <pcl/common/transforms.h>
 #include <pcl/octree/octree_search.h>
 #include <pcl/kdtree/kdtree_flann.h>
-#include <pcl/filters/voxel_grid.h>
-
+#include <pcl/filters/statistical_outlier_removal.h>
 
 class GlobSkel {
 public:
@@ -32,7 +31,6 @@ private:
     int seg_count;
 
     /* Data */
-    pcl::PointCloud<pcl::PointXYZ>::Ptr temp_cloud;
     pcl::PointCloud<pcl::PointXYZ>::Ptr tf_cloud;
     int skel_size;
     int new_pts;
@@ -42,7 +40,6 @@ private:
     /* Utils */
     std::unique_ptr<pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>> octree;
     pcl::KdTreeFLANN<pcl::PointXYZ> kdtree; // kdtree for skeleton refinement
-    pcl::VoxelGrid<pcl::PointXYZ> vgf;
-
+    pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
 };
 #endif
