@@ -80,7 +80,7 @@ void RosaNode::pcd_callback(const sensor_msgs::msg::PointCloud2::SharedPtr pcd_m
     if (scan_counter == N_scans) {
         set_cloud();
         batch_pcd->clear();
-        scan_counter = 0;
+        scan_counter = 0;   
     }
 }
 
