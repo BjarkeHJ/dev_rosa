@@ -133,6 +133,9 @@ void RosaMain::normalize() {
         SSD.nrs_matrix(i,1) = nrm.normal_y;
         SSD.nrs_matrix(i,2) = nrm.normal_z;
     }
+
+    th_mah = 0.1*radius_neigh; // Threshold for similarity neighbour extraction
+    delta = leaf_size_ds; // Plane slice thickness (equal to the voxel leaf size)
 }
 
 void RosaMain::density_check() {
