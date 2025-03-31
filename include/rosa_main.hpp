@@ -29,40 +29,6 @@
 
 #include "Extra_Del.hpp"
 
-class DataWrapper {
-private:
-    double* data;
-    int npoints;
-    const static int ndim = 3; 
-        
-public: 
-    void factory(double* data, int npoints ) {
-        this->data = data;
-        this->npoints = npoints;
-    }
-    /** 
-     *  Data retrieval function
-     *  @param a address over npoints
-     *  @param b address over the dimensions
-     */
-    inline double operator()(int a, int b) {
-        assert( a < npoints );
-        assert( b < ndim );
-        return data[ a + npoints*b ];
-    }
-    // retrieve a single point at offset a, in a vector (preallocated structure)
-    inline void operator()(int a, std::vector<double>& p){
-        assert( a < npoints );
-        assert( (int)p.size() == ndim );
-        p[0] = data[ a + 0*npoints ];
-        p[1] = data[ a + 1*npoints ];
-        p[2] = data[ a + 2*npoints ];
-    }
-    int length(){
-        return this->npoints;
-    }
-};
-
 struct Vector3dCompare // lexicographic ordering: return true if v1 is ordered BEFORE v2...
 {
     bool operator()(const Eigen::Vector3d& v1, const Eigen::Vector3d& v2) const {
@@ -89,7 +55,6 @@ struct SkeletonDecomposition
     pcl::PointCloud<pcl::PointNormal>::Ptr cloud_w_normals;
     Eigen::MatrixXd pts_matrix;
     Eigen::MatrixXd nrs_matrix;
-    double *datas;
 
     std::vector<std::vector<int>> neighs; // For each point x in pts_ store the indices of the neighbouring point int neighs[x].
     std::vector<std::vector<int>> neighs_new;
@@ -119,8 +84,7 @@ public:
 
     /* Utils */
     SkeletonDecomposition SSD;
-
-private:
+    private:
     /* Functions */
     void normalize();
     void density_check();
@@ -133,19 +97,18 @@ private:
     void recenter();
     void restore_scale();
     
-
+    
     void rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals);
     Eigen::Matrix3d create_orthonormal_frame(Eigen::Vector3d &v);
     Eigen::MatrixXd compute_active_samples(int &idx, Eigen::Vector3d &p_cut, Eigen::Vector3d &v_cut);
-    void pcloud_isoncut(Eigen::Vector3d& p_cut, Eigen::Vector3d& v_cut, std::vector<int>& isoncut, double*& datas, int& size);
-    void distance_query(DataWrapper& data, const std::vector<double>& Pp, const std::vector<double>& Np, double delta, std::vector<int>& isoncut);
     Eigen::Vector3d compute_symmetrynormal(Eigen::MatrixXd& local_normals);
     double symmnormal_variance(Eigen::Vector3d& symm_nor, Eigen::MatrixXd& local_normals);
     Eigen::Vector3d symmnormal_smooth(Eigen::MatrixXd& V, Eigen::MatrixXd& w);
     Eigen::Vector3d closest_projection_point(Eigen::MatrixXd& P, Eigen::MatrixXd& V);
     int argmax_eigen(Eigen::MatrixXd &x);
-
+    
     /* Params */
+    double pts_dist_lim; // For lidar point distance filtering
     int ne_KNN; // K normal estimation neighbours
     double radius_neigh; // Radius for mahanalobis neighbour search
     double th_mah; // Mahanalobis distance threshold
@@ -158,7 +121,7 @@ private:
     double delta; // Plane slice thickness
     double sample_radius; // Sample radius for line extraction
     double alpha_recenter; // rosa recentering...
-
+    
     /* Data */
     int pcd_size_;
     double norm_scale;
@@ -169,8 +132,9 @@ private:
     pcl::PointCloud<pcl::PointXYZ>::Ptr temp_ver_cloud;
     pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud;
     Eigen::MatrixXi adj_before_collapse;
-
+    
     /* Utils */
+    pcl::PassThrough<pcl::PointXYZ> ptf; // pass through filter for distance filtering
     pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> ne; // Normal estimation
     pcl::VoxelGrid<pcl::PointNormal> vgf; // Voxel Grid Filter for downsamplings
     pcl::KdTreeFLANN<pcl::PointXYZ> surf_kdtree;

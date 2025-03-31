@@ -2,24 +2,24 @@
 
 void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     /* Get launch parameters */
+    node->declare_parameter<double>("max_lidar_dist", 20);
     node->declare_parameter<int>("normal_est_KNN", 10);
     node->declare_parameter<double>("neighbour_radius", 0.1);
     node->declare_parameter<int>("max_pts", 1000);
     node->declare_parameter<int>("min_pts", 50);
     node->declare_parameter<int>("neighbour_KNN", 6);
     node->declare_parameter<int>("drosa_iter", 1);
-    node->declare_parameter<double>("delta", 0.01);
     node->declare_parameter<int>("dcrosa_iter", 1);
     node->declare_parameter<double>("sample_radius", 0.05);
     node->declare_parameter<double>("alpha", 0.3);
 
+    pts_dist_lim = node->get_parameter("max_lidar_dist").as_double();
     ne_KNN = node->get_parameter("normal_est_KNN").as_int();
     radius_neigh = node->get_parameter("neighbour_radius").as_double();
     nMax = node->get_parameter("max_pts").as_int();
     nMin = node->get_parameter("min_pts").as_int();
     k_KNN = node->get_parameter("neighbour_KNN").as_int();
     drosa_iter = node->get_parameter("drosa_iter").as_int();
-    delta = node->get_parameter("delta").as_double();
     dcrosa_iter = node->get_parameter("dcrosa_iter").as_int();
     sample_radius = node->get_parameter("sample_radius").as_double();
     alpha_recenter = node->get_parameter("alpha").as_double();
@@ -48,9 +48,6 @@ void RosaMain::main() {
         return; // Too few points to reliably compute ROSA ptss
     }
     debug_cloud = SSD.pts_;
-
-    // After normalization: Ensure density constraint is met in the point cloud. Remove areas of insufficient density
-
     mahanalobis_mat(radius_neigh);
     drosa();
     dcrosa();
@@ -67,6 +64,15 @@ void RosaMain::main() {
 }
 
 void RosaMain::normalize() {
+    /* Distance Filtering */
+    ptf.setInputCloud(SSD.pts_);
+    ptf.setFilterFieldName("x");
+    ptf.setFilterLimits(-pts_dist_lim, pts_dist_lim);
+    ptf.filter(*SSD.pts_);
+    ptf.setFilterFieldName("y");
+    ptf.setFilterLimits(-pts_dist_lim, pts_dist_lim);
+    ptf.filter(*SSD.pts_);
+
     /* Normalization */
     pcl::PointXYZ min, max;
     pcl::getMinMax3D(*SSD.pts_, min, max);
@@ -121,9 +127,10 @@ void RosaMain::normalize() {
         pt.x = SSD.cloud_w_normals->points[i].x;
         pt.y = SSD.cloud_w_normals->points[i].y;
         pt.z = SSD.cloud_w_normals->points[i].z;
-        nrm.normal_x = SSD.cloud_w_normals->points[i].normal_x;
-        nrm.normal_y = SSD.cloud_w_normals->points[i].normal_y;
-        nrm.normal_z = SSD.cloud_w_normals->points[i].normal_z;
+        // Friday 28/3: changed sign as it was missed prev
+        nrm.normal_x = -SSD.cloud_w_normals->points[i].normal_x;
+        nrm.normal_y = -SSD.cloud_w_normals->points[i].normal_y;
+        nrm.normal_z = -SSD.cloud_w_normals->points[i].normal_z;
         SSD.pts_->points.push_back(pt);
         SSD.normals_->points.push_back(nrm);
         SSD.pts_matrix(i,0) = pt.x;
@@ -135,7 +142,7 @@ void RosaMain::normalize() {
     }
 
     th_mah = 0.1*radius_neigh; // Threshold for similarity neighbour extraction
-    delta = leaf_size_ds; // Plane slice thickness (equal to the voxel leaf size)
+    delta = leaf_size_ds; // Plane slice thickness kept equal to the voxel leaf size
 }
 
 void RosaMain::density_check() {
@@ -229,7 +236,7 @@ void RosaMain::drosa() {
     std::vector<float> nn_squared_distance(k_KNN);
     pcl::PointXYZ search_pt_surf;
 
-    // Nearest neighbours search...
+    // K Nearest neighbours search...
     surf_kdtree.setInputCloud(SSD.pts_);
     for (int i=0; i<pcd_size_; i++) {
         std::vector<int>().swap(temp_surf);
@@ -248,9 +255,11 @@ void RosaMain::drosa() {
 
         for (int pidx=0; pidx<pcd_size_; pidx++) {
             var_p = pset.row(pidx); // Search point for activate samples
-            var_v = vset.row(pidx);
+            var_v = vset.row(pidx); // Corresponding plane normal estimate 
             indxs = compute_active_samples(pidx, var_p, var_v);
             extract_normals = ed_.rows_ext_M(indxs, SSD.nrs_matrix);
+
+            // Compute the vector that minimizes the variance of angles between local normals and itself
             vnew.row(pidx) = compute_symmetrynormal(extract_normals).transpose();
             new_v = vnew.row(pidx);
             
@@ -262,11 +271,16 @@ void RosaMain::drosa() {
                 vvar(pidx, 0) = 0.0;
             }
         }
+        vset = vnew; // Overwrite previous plane normal estimates with the updated (for iterative convergence)
+
         Eigen::MatrixXd offset(vvar.rows(), vvar.cols());
         offset.setOnes();
         offset = 0.00001*offset; // Ensure no division by zero
-        vvar = (vvar.cwiseAbs2().cwiseAbs2() + offset).cwiseInverse(); // vvar becoms 1/(|elem|⁴)... (??)
-        vset = vnew;
+
+        // Weighting the variance values to suppress large variance and emphasize low-variance regions
+        // Small variances have HIGH CONFIDENCE
+        // Large variances are negleglible
+        vvar = (vvar.cwiseAbs2().cwiseAbs2() + offset).cwiseInverse(); // 1/vvar⁴ 
         
         /* Smoothing */
         std::vector<int> surf_;
@@ -275,13 +289,15 @@ void RosaMain::drosa() {
         Eigen::MatrixXd vset_ex, vvar_ex; // Extracted vector set and corresponding vector variances
         for (int p=0; p<pcd_size_; p++) {
             std::vector<int>().swap(surf_);
-            surf_ = SSD.neighs_surf[p]; // Set 
+            surf_ = SSD.neighs_surf[p]; // Extract neighbours of the current point
             snidxs.resize(surf_.size(), 1);
-            snidxs = Eigen::Map<Eigen::MatrixXi>(surf_.data(), surf_.size(), 1); // map SSD.neighs_surf (also indicies) to snidxs
+            snidxs = Eigen::Map<Eigen::MatrixXi>(surf_.data(), surf_.size(), 1);
             snidxs_d = snidxs.cast<double>(); 
             vset_ex = ed_.rows_ext_M(snidxs_d, vset);
             vvar_ex = ed_.rows_ext_M(snidxs_d, vvar);
-            vset.row(p) = symmnormal_smooth(vset_ex, vvar_ex); // adjust the vector set to be the smoothed symmetry normals
+
+            // Construct a weighted covariance computation based on the projection variances and 
+            vset.row(p) = symmnormal_smooth(vset_ex, vvar_ex); //Overwrite the plane normal est. for next iteration...
         }
     }
 
@@ -295,18 +311,19 @@ void RosaMain::drosa() {
     for (int pIdx=0; pIdx<pcd_size_; pIdx++) {
         var_p_p = pset.row(pIdx);
         var_v_p = vset.row(pIdx);
-        indxs_p = compute_active_samples(pIdx, var_p_p, var_v_p);
+        indxs_p = compute_active_samples(pIdx, var_p_p, var_v_p); // Extract active samples
 
-        /* Update neighbours */
+        /* Update neighbours to be from the same plane slice */
         std::vector<int> temp_neigh;
         for (int p=0; p<(int)indxs_p.rows(); p++) {
             temp_neigh.push_back(indxs_p(p,0));
         }
+
         SSD.neighs_new.push_back(temp_neigh);
 
         extract_pts = ed_.rows_ext_M(indxs_p, SSD.pts_matrix);
         extract_nrs = ed_.rows_ext_M(indxs_p, SSD.nrs_matrix);
-        center = closest_projection_point(extract_pts, extract_nrs);
+        center = closest_projection_point(extract_pts, extract_nrs); // Extract the intersection point of surface normals
 
         if (abs(center(0)) < 1 && abs(center(1)) < 1 && abs(center(2)) < 1) {
             // If the center is within the max dimension of the normalized data...
@@ -723,11 +740,20 @@ void RosaMain::recenter() {
 
 void RosaMain::restore_scale() {
     SSD.rosa_pts->clear();
-    for (int i=0; i<(int)SSD.vertices.rows(); i++) {
+    // for (int i=0; i<(int)SSD.vertices.rows(); i++) {
+    //     pcl::PointXYZ pt;
+    //     pt.x = SSD.vertices(i,0) * norm_scale + centroid(0);
+    //     pt.y = SSD.vertices(i,1) * norm_scale + centroid(1);
+    //     pt.z = SSD.vertices(i,2) * norm_scale + centroid(2);
+    //     SSD.rosa_pts->points.push_back(pt);
+    // }
+
+    /* For pts after dcrosa() */
+    for (int i=0; i<(int)pset.rows(); i++) {
         pcl::PointXYZ pt;
-        pt.x = SSD.vertices(i,0) * norm_scale + centroid(0);
-        pt.y = SSD.vertices(i,1) * norm_scale + centroid(1);
-        pt.z = SSD.vertices(i,2) * norm_scale + centroid(2);
+        pt.x = pset(i,0) * norm_scale + centroid(0);
+        pt.y = pset(i,1) * norm_scale + centroid(1);
+        pt.z = pset(i,2) * norm_scale + centroid(2);
         SSD.rosa_pts->points.push_back(pt);
     }
 }
@@ -738,11 +764,7 @@ void RosaMain::rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::
     pset.resize(pcd_size_, 3);
     vset.resize(pcd_size_, 3);
     vvar.resize(pcd_size_, 1);
-    SSD.datas = new double[3 * pcd_size_];
     for (int i=0; i<pcd_size_; i++) {
-        SSD.datas[i] = SSD.pts_->points[i].x;
-        SSD.datas[i + pcd_size_] = SSD.pts_->points[i].y;
-        SSD.datas[i + 2*pcd_size_] = SSD.pts_->points[i].z;
         pset(i,0) = cloud->points[i].x;
         pset(i,1) = cloud->points[i].y;
         pset(i,2) = cloud->points[i].z;
@@ -793,21 +815,36 @@ Eigen::Matrix3d RosaMain::create_orthonormal_frame(Eigen::Vector3d &v) {
 }
 
 Eigen::MatrixXd RosaMain::compute_active_samples(int &idx, Eigen::Vector3d &p_cut, Eigen::Vector3d &v_cut) {
-    // Returns indices of normals considered in the same plane (plane-slice)
-
-    // idx: index of the current point in the point cloud
-    // p_cut: point corresponding to idx
-    // v_cut: a vector orthogonal to the surface normal at idx (from create_orthonormal_fram)
-    
+    // Extracts an index-vector masked with the indices on the plane slice
     Eigen::MatrixXd out_indxs(pcd_size_, 1);
-    int out_size = 0; // Is incremented as points in the plane-slice is determined...
-    std::vector<int> isoncut(pcd_size_, 0); // vector initialized with zeros
+    int out_size = 0;
+    std::vector<int> isoncut(pcd_size_, 0); // On cut mask
 
-    // Sets the indices of isoncut that are in place-slice to 1 and resizes the vector.
-    pcloud_isoncut(p_cut, v_cut, isoncut, SSD.datas, pcd_size_);
-    
+    std::vector<double> p(3); // Current point
+    p[0] = p_cut(0);
+    p[1] = p_cut(1);
+    p[2] = p_cut(2);
+    std::vector<double> n(3); // Corresponding plane normal vector
+    n[0] = v_cut(0);
+    n[1] = v_cut(1);
+    n[2] = v_cut(2);
+
+    std::vector<double> Pi(3); // Point to check if isoncut
+    for (int pIdx=0; pIdx<pcd_size_; pIdx++) {
+        Pi[0] = SSD.pts_->points[pIdx].x;
+        Pi[1] = SSD.pts_->points[pIdx].y;
+        Pi[2] = SSD.pts_->points[pIdx].z;
+
+        // Determine if the current point is included in the plane slice. That is within delta distance from the plane...
+        // Distance is calculated as d = n*(p - P)
+        // using the plane equation: https://tutorial.math.lamar.edu/classes/calciii/eqnsofplanes.aspx
+        if (fabs(n[0]*(p[0]-Pi[0]) + n[1]*(p[1]-Pi[1]) + n[2]*(p[2]-Pi[2])) < delta) {
+            isoncut[pIdx] = 1;
+        }
+    }
+
     std::vector<int> queue;
-    queue.reserve(pcd_size_); // Allocate memory 
+    queue.reserve(pcd_size_); // Allocate memory
     queue.emplace_back(idx); // Insert at the end of queue
 
     int curr;
@@ -828,59 +865,26 @@ Eigen::MatrixXd RosaMain::compute_active_samples(int &idx, Eigen::Vector3d &p_cu
     return out_indxs;
 }
 
-void RosaMain::pcloud_isoncut(Eigen::Vector3d& p_cut, Eigen::Vector3d& v_cut, std::vector<int>& isoncut, double*& datas, int& size) {
-    DataWrapper data;
-    data.factory(datas, size); // datas size is size x 3
-
-    std::vector<double> p(3); 
-    p[0] = p_cut(0); 
-    p[1] = p_cut(1); 
-    p[2] = p_cut(2);
-    std::vector<double> n(3); 
-    n[0] = v_cut(0); 
-    n[1] = v_cut(1); 
-    n[2] = v_cut(2);
-    distance_query(data, p, n, delta, isoncut);
-}
-
-void RosaMain::distance_query(DataWrapper& data, const std::vector<double>& Pp, const std::vector<double>& Np, double delta, std::vector<int>& isoncut) {
-    std::vector<double> P(3);
-    // data.lenght() is just pcd_size_
-    for (int pIdx=0; pIdx < data.length(); pIdx++) {
-        // retrieve current point
-        data(pIdx, P);
-        
-        // check distance (fabs is floating point absolute value...)
-        // Np is normal vector to plane of point Pp. Distance is calculated as d = Np (dot) (Pp - P)
-        // using the plane equation: https://tutorial.math.lamar.edu/classes/calciii/eqnsofplanes.aspx
-        // Determine if the current point is included in the plane slice. That is within delta distance from the plane...
-        if (fabs( Np[0]*(Pp[0]-P[0]) + Np[1]*(Pp[1]-P[1]) + Np[2]*(Pp[2]-P[2]) ) < delta) {
-            isoncut[pIdx] = 1;
-        }
-    }
-}
-
 Eigen::Vector3d RosaMain::compute_symmetrynormal(Eigen::MatrixXd& local_normals) {
-    // This function determines the vector that minimizes the variance amongst the local_normals. 
+    // This function determines the vector that minimizes the variance of the angle between local normals and the vector.
     // This can be interpreted as the "direction" of the skeleton inside the structure...
     // The symmetry normal will be the normal vector of the best fit plane of points corresponding to the local_normals
 
     Eigen::Matrix3d M; Eigen::Vector3d vec;
-    double alpha = 0.0;
     int size = local_normals.rows();
     double Vxx, Vyy, Vzz, Vxy, Vyx, Vxz, Vzx, Vyz, Vzy;
 
     // Variances: Computing the mean squared value and substracting the mean squared value -> Variance = E[X²] - E[X]²
-    Vxx = (1.0+alpha)*local_normals.col(0).cwiseAbs2().sum()/size - pow(local_normals.col(0).sum(), 2)/pow(size, 2);
-    Vyy = (1.0+alpha)*local_normals.col(1).cwiseAbs2().sum()/size - pow(local_normals.col(1).sum(), 2)/pow(size, 2);
-    Vzz = (1.0+alpha)*local_normals.col(2).cwiseAbs2().sum()/size - pow(local_normals.col(2).sum(), 2)/pow(size, 2);
+    Vxx = local_normals.col(0).cwiseAbs2().sum() / size - pow(local_normals.col(0).sum(), 2) / pow(size, 2);
+    Vyy = local_normals.col(1).cwiseAbs2().sum() / size - pow(local_normals.col(1).sum(), 2) / pow(size, 2);
+    Vzz = local_normals.col(2).cwiseAbs2().sum() / size - pow(local_normals.col(2).sum(), 2) / pow(size, 2);
 
     // Covariances: Computing the mean of the product of 2 components and subtracting the product of the means of each components -> Covariance = E[XY] - E[X]E[Y]
-    Vxy = 2*(1.0+alpha)*(local_normals.col(0).cwiseProduct(local_normals.col(1))).sum()/size - 2*local_normals.col(0).sum()*local_normals.col(1).sum()/pow(size, 2);
+    Vxy = 2*(local_normals.col(0).cwiseProduct(local_normals.col(1))).sum()/size - 2*local_normals.col(0).sum()*local_normals.col(1).sum()/pow(size, 2);
     Vyx = Vxy;
-    Vxz = 2*(1.0+alpha)*(local_normals.col(0).cwiseProduct(local_normals.col(2))).sum()/size - 2*local_normals.col(0).sum()*local_normals.col(2).sum()/pow(size, 2);
+    Vxz = 2*(local_normals.col(0).cwiseProduct(local_normals.col(2))).sum()/size - 2*local_normals.col(0).sum()*local_normals.col(2).sum()/pow(size, 2);
     Vzx = Vxz;
-    Vyz = 2*(1.0+alpha)*(local_normals.col(1).cwiseProduct(local_normals.col(2))).sum()/size - 2*local_normals.col(1).sum()*local_normals.col(2).sum()/pow(size, 2);
+    Vyz = 2*(local_normals.col(1).cwiseProduct(local_normals.col(2))).sum()/size - 2*local_normals.col(1).sum()*local_normals.col(2).sum()/pow(size, 2);
     Vzy = Vyz;
     M << Vxx, Vxy, Vxz, Vyx, Vyy, Vyz, Vzx, Vzy, Vzz;
 
@@ -899,22 +903,22 @@ double RosaMain::symmnormal_variance(Eigen::Vector3d& symm_nor, Eigen::MatrixXd&
     Eigen::VectorXd alpha;
     int num = local_normals.rows();
     Eigen::MatrixXd repmat = symm_nor.transpose().replicate(num, 1); // replicate with a row-factor of num and col-factor of 1
-    alpha = local_normals * symm_nor; // calculate the projection of each local normal on the symmetry normal... Inner products between the symm_nor and each row (normal) in local_normals
+
+    // calculate the projection of each local normal on the symmetry normal... 
+    alpha = local_normals * symm_nor; // Inner product between the symm_nor and each row (normal) in local_normals
     
     // Calculate sample variance of the projections
     double var;
+    var = alpha.squaredNorm() / num - pow(alpha.mean(), 2); // sum(alphas)/N - mean(alpha)²
     if (num > 1) {
-        var = (num+1)*(alpha.squaredNorm()/(num+1) - alpha.mean()*alpha.mean())/num;
-    }
-    else {
-        var = alpha.squaredNorm()/(num+1) - alpha.mean()*alpha.mean();
+        var /= (num - 1.0); // *1/(N-1)
     }
     return var;
 }
 
 Eigen::Vector3d RosaMain::symmnormal_smooth(Eigen::MatrixXd& V, Eigen::MatrixXd& w) {
     // V: vset_ex = symmetry normals computed for the neighbours of a point
-    // w: vvar_ex = reciprocal variances of local normal projections on symmetry normal
+    // w: vvar_ex = reciprocal variances (fourth power) of local normal projections on symmetry normal
 
     Eigen::Matrix3d M; 
     Eigen::Vector3d vec;
@@ -936,12 +940,12 @@ Eigen::Vector3d RosaMain::symmnormal_smooth(Eigen::MatrixXd& V, Eigen::MatrixXd&
     Vzy = Vyz;
     M << Vxx, Vxy, Vxz, Vyx, Vyy, Vyz, Vzx, Vzy, Vzz;
 
-    // The variances are reciprocal meaning large variances contribute with smaller values in the summation...
+    // The variances are reciprocal fourth order meaning large variances contribute with smaller values in the summation...
     Eigen::BDCSVD<Eigen::MatrixXd> svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
     Eigen::Matrix3d U = svd.matrixU();
 
     // The vector corresponding to the largest singular value (first column of U)
-    // It represents the the vector of smallest variance amongst the symmetry normals in the neighbourhood of the current point. 
+    // It represents the the vector of smallest variance amongst the symmetry normals in the neighbourhood of the current point.
     vec = U.col(0);
 
     return vec;
@@ -949,6 +953,8 @@ Eigen::Vector3d RosaMain::symmnormal_smooth(Eigen::MatrixXd& V, Eigen::MatrixXd&
 
 Eigen::Vector3d RosaMain::closest_projection_point(Eigen::MatrixXd& P, Eigen::MatrixXd& V) {
     // Takes points (P) and corresponding surface normal vectors (V)
+    // Each P and corresponding V defines an implicit plane equations: Vi(X-Pi)=0 representing all points on the plane passing through Pi with normal Vi
+    // Goal is to find a single point X* that is as close as possible to all these planes (in a least squares sense)
     Eigen::Vector3d vec;
     Eigen::VectorXd Lix2, Liy2, Liz2;
 
@@ -957,23 +963,27 @@ Eigen::Vector3d RosaMain::closest_projection_point(Eigen::MatrixXd& P, Eigen::Ma
     Liy2 = V.col(1).cwiseAbs2();
     Liz2 = V.col(2).cwiseAbs2();
 
+    // Formulate the linear system MX = B
     Eigen::Matrix3d M = Eigen::Matrix3d::Zero();
     Eigen::Vector3d B = Eigen::Vector3d::Zero();
 
-    M(0,0) = (Liy2+Liz2).sum(); 
-    M(0,1) = -(V.col(0).cwiseProduct(V.col(1))).sum();
-    M(0,2) = -(V.col(0).cwiseProduct(V.col(2))).sum();
+    M(0,0) = (Liy2+Liz2).sum(); // sum(Viy²+Viz²)
+    M(0,1) = -(V.col(0).cwiseProduct(V.col(1))).sum(); // -sum(Vix*Viy)
+    M(0,2) = -(V.col(0).cwiseProduct(V.col(2))).sum(); // -sum(Vix*Viz)
 
-    M(1,0) = -(V.col(1).cwiseProduct(V.col(0))).sum();
-    M(1,1) = (Lix2 + Liz2).sum();
-    M(1,2) = -(V.col(1).cwiseProduct(V.col(2))).sum();
+    M(1,0) = -(V.col(1).cwiseProduct(V.col(0))).sum(); // -sum(Viy*Vix)
+    M(1,1) = (Lix2 + Liz2).sum(); // sum(Vix²+Viz²)
+    M(1,2) = -(V.col(1).cwiseProduct(V.col(2))).sum(); // -sum(Viy*Viz)
 
-    M(2,0) = -(V.col(2).cwiseProduct(V.col(0))).sum();
-    M(2,1) = -(V.col(2).cwiseProduct(V.col(1))).sum();
-    M(2,2) = (Lix2 + Liy2).sum();
+    M(2,0) = -(V.col(2).cwiseProduct(V.col(0))).sum(); // -sum(Viz*Vix)
+    M(2,1) = -(V.col(2).cwiseProduct(V.col(1))).sum(); // -sum(Viz*Viy)
+    M(2,2) = (Lix2 + Liy2).sum(); // sum(Vix²+Viy²)
 
+    // sum( Pix(Viy²+Viz²) - PiyVixViy - PizVixViz )
     B(0) = (P.col(0).cwiseProduct(Liy2 + Liz2)).sum() - (V.col(0).cwiseProduct(V.col(1)).cwiseProduct(P.col(1))).sum() - (V.col(0).cwiseProduct(V.col(2)).cwiseProduct(P.col(2))).sum();
+    // sum( Piy(Vix²+Viz²) - PixVixViy - PizViyViz )
     B(1) = (P.col(1).cwiseProduct(Lix2 + Liz2)).sum() - (V.col(1).cwiseProduct(V.col(0)).cwiseProduct(P.col(0))).sum() - (V.col(1).cwiseProduct(V.col(2)).cwiseProduct(P.col(2))).sum();
+    // sum( Piz(Vix²+Viy²) - PixVixViz - PiyViyViz )
     B(2) = (P.col(2).cwiseProduct(Lix2 + Liy2)).sum() - (V.col(2).cwiseProduct(V.col(0)).cwiseProduct(P.col(0))).sum() - (V.col(2).cwiseProduct(V.col(1)).cwiseProduct(P.col(1))).sum();
 
     if (std::abs(M.determinant()) < 1e-3) {
@@ -982,7 +992,7 @@ Eigen::Vector3d RosaMain::closest_projection_point(Eigen::MatrixXd& P, Eigen::Ma
 
     else {
         // Solving a least squares minimization problem to find the best fit projection point
-        // vec = M^(-1) * B
+        // X = M^(-1) * B
         vec = M.inverse()*B;
     }
     return vec;

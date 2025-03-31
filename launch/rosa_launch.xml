@@ -4,14 +4,14 @@
         <param name="num_scans" type="int" value="1"/> <!-- Number of Lidar scans before publishing -->
 
         <!-- ROSA MAIN -->
+        <param name="max_lidar_dist" type="float" value="20"/> <!-- Max distance for lidar points used for calculations -->
         <param name="max_pts" type="int" value="200"/> <!-- Max number of points in downsampled cloud -->
         <param name="min_pts" type="int" value="50"/> <!-- Min number of points in downsampled cloud (For reliable computation) -->
         <param name="normal_est_KNN" type="int" value="10"/> <!-- K nearest neighbours for normal estimation -->
         <param name="neighbour_radius" type="float" value="0.1"/> <!-- radius for mahalanobis neighbour search -->
         <param name="neighbour_KNN" type="int" value="7"/> <!-- K nearest surface neigbours -->
         <param name="drosa_iter" type="int" value="5"/> <!-- Number of iterations for calculating ROSA points orientation and position -->
-        <param name="dcrosa_iter" type="int" value="5"/> <!-- Number of iterations for smoothing and shrinkign ROSA points -->
-        <param name="delta" type="float" value="0.01"/> <!-- Plane slice thickness -->
+        <param name="dcrosa_iter" type="int" value="3"/> <!-- Number of iterations for smoothing and shrinkign ROSA points -->
         <param name="sample_radius" type="float" value="0.05"/> <!-- Sampling radius for ROSA points selection -->
         <param name="alpha" type="float" value="0.3"/> <!-- Scalefactor for recentering to fuse euclidian and projection -->
         
