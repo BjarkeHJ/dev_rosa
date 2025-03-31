@@ -62,7 +62,6 @@ struct SkeletonDecomposition
 
     Eigen::MatrixXd skelver;
 
-    Eigen::MatrixXd corresp;
     Eigen::MatrixXi skeladj;
     Eigen::MatrixXd vertices;
     Eigen::MatrixXi edges;
@@ -86,13 +85,14 @@ public:
     SkeletonDecomposition SSD;
     private:
     /* Functions */
+    void distance_filter();
     void normalize();
-    void density_check();
     void mahanalobis_mat(double &radius_r);
     double pt_mahalanobis_metric(pcl::PointXYZ &p1, pcl::Normal &v1, pcl::PointXYZ &p2, pcl::Normal &v2, double &range_r);
     void drosa();
     void dcrosa();
-    void vertices_extract();
+    void vertex_sampling();
+
     void lineextract();
     void recenter();
     void restore_scale();
@@ -114,11 +114,11 @@ public:
     double th_mah; // Mahanalobis distance threshold
     int nMax; // Maximum number of points in each point cloud
     int nMin; // Minimum ...
-    double leaf_size_ds;
+    double leaf_size_ds; // Set dynamically... 
     int k_KNN; // Number of neighbours in surface-neighbour search (drosa / dcrosa)
     int drosa_iter; // Number of iteration in drosa
     int dcrosa_iter; // Number of iteration in dcrosa
-    double delta; // Plane slice thickness
+    double delta; // Plane slice thickness -- Will be set equal to leaf_size_ds once determined
     double sample_radius; // Sample radius for line extraction
     double alpha_recenter; // rosa recentering...
     
@@ -140,6 +140,7 @@ public:
     pcl::KdTreeFLANN<pcl::PointXYZ> surf_kdtree;
     pcl::KdTreeFLANN<pcl::PointXYZ> rosa_tree;
     pcl::KdTreeFLANN<pcl::PointXYZ> pset_tree;
+    pcl::KdTreeFLANN<pcl::PointXYZ> fps_tree;
 
 };
 

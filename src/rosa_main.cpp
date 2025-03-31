@@ -40,13 +40,16 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
 
 void RosaMain::main() {
     auto start = std::chrono::high_resolution_clock::now();
-    
+    distance_filter();
     pcd_size_ = SSD.pts_->points.size();
+    if (!pcd_size_) return; // No points within range...
+
     normalize();
     if (pcd_size_ < nMin) {
         std::cout << "Point Cloud size below nMin... Skipping..." << std::endl; 
-        return; // Too few points to reliably compute ROSA ptss
+        return; // Too few points to reliably compute ROSA pts
     }
+
     debug_cloud = SSD.pts_;
     mahanalobis_mat(radius_neigh);
     drosa();
@@ -63,7 +66,7 @@ void RosaMain::main() {
     std::cout << "Time elapsed: " << elapsed.count() << " seconds" << std::endl;
 }
 
-void RosaMain::normalize() {
+void RosaMain::distance_filter() {
     /* Distance Filtering */
     ptf.setInputCloud(SSD.pts_);
     ptf.setFilterFieldName("x");
@@ -72,7 +75,9 @@ void RosaMain::normalize() {
     ptf.setFilterFieldName("y");
     ptf.setFilterLimits(-pts_dist_lim, pts_dist_lim);
     ptf.filter(*SSD.pts_);
+}
 
+void RosaMain::normalize() {
     /* Normalization */
     pcl::PointXYZ min, max;
     pcl::getMinMax3D(*SSD.pts_, min, max);
@@ -91,6 +96,11 @@ void RosaMain::normalize() {
     }
     
     /* Normal Estimation */
+    if (SSD.pts_->points.empty()) {
+        std::cout << "Filtered out all points - Cloud empty" << std::endl;
+        return;
+    }
+
     pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>());
     SSD.normals_->clear();
     ne.setInputCloud(SSD.pts_);
@@ -111,10 +121,6 @@ void RosaMain::normalize() {
         leaf_size_ds += 0.001;
     }
 
-    // std::cout << "Cloud size before density check: " << SSD.cloud_w_normals->points.size() << std::endl;
-    // density_check();
-    // std::cout << "Cloud size after density check: " << SSD.cloud_w_normals->points.size() << std::endl;
-    
     pcd_size_ = SSD.cloud_w_normals->points.size();
     SSD.pts_->clear();
     SSD.normals_->clear();
@@ -143,28 +149,6 @@ void RosaMain::normalize() {
 
     th_mah = 0.1*radius_neigh; // Threshold for similarity neighbour extraction
     delta = leaf_size_ds; // Plane slice thickness kept equal to the voxel leaf size
-}
-
-void RosaMain::density_check() {
-    double res = k_KNN * leaf_size_ds;
-    int min_pts = k_KNN;
-
-    std::map<Eigen::Vector3i, int, Vector3iCompare> voxel_counts;
-    for (const auto &ptt : SSD.cloud_w_normals->points) {
-        Eigen::Vector3i voxel_idx = (ptt.getArray3fMap() / res).cast<int>();
-        voxel_counts[voxel_idx]++;
-    }
-    SSD.cloud_w_normals->points.erase(
-        std::remove_if(SSD.cloud_w_normals->points.begin(), SSD.cloud_w_normals->points.end(),
-                       [&](const pcl::PointNormal &ptt) {
-                            Eigen::Vector3i voxel_idx = (ptt.getArray3fMap() / res).cast<int>();
-                            return voxel_counts[voxel_idx] < min_pts;
-                       }),
-                       SSD.cloud_w_normals->points.end());
-
-    SSD.cloud_w_normals->width = SSD.cloud_w_normals->points.size();
-    SSD.cloud_w_normals->height = 1; // Make it unorganized
-    SSD.cloud_w_normals->is_dense = false; // Mark as not necessarily dense
 }
 
 void RosaMain::mahanalobis_mat(double &radius_r) {
@@ -433,6 +417,87 @@ void RosaMain::dcrosa() {
     }
 }
 
+void RosaMain::vertex_sampling() {
+    Extra_Del ed_le;
+    int outlier = 2;
+    Eigen::MatrixXi bad_sample = Eigen::MatrixXi::Zero(pcd_size_, 1);
+    pcl::PointXYZ pset_pt;
+    pset_cloud->clear();
+    for (int i=0; i<pcd_size_; i++) {
+        if ((int)SSD.neighs[i].size() <= outlier) {
+            bad_sample(i,0) = 1;
+        }
+        pset_pt.x = pset(i,0);
+        pset_pt.y = pset(i,1);
+        pset_pt.z = pset(i,2);
+        pset_cloud->points.push_back(pset_pt);
+    }
+
+    // mindst stores the minimum squared distance from each unassigned point to the nearest assigned skeleton point. 
+    Eigen::MatrixXd mindst = Eigen::MatrixXd::Constant(pcd_size_, 1, std::numeric_limits<double>::quiet_NaN()); 
+    
+    Eigen::MatrixXd corresp = Eigen::MatrixXd::Constant(pcd_size_, 1, -1); // initialized with value -1
+    Eigen::MatrixXi int_nidxs;
+    Eigen::MatrixXd nIdxs;
+    Eigen::MatrixXd extract_corresp;
+    pcl::PointXYZ search_point;
+    std::vector<int> indxs;
+    std::vector<float> radius_squared_distance;
+    fps_tree.setInputCloud(pset_cloud);
+    SSD.skelver(0,3);
+
+    // Farthest Point Sampling (FPS) / Skeletonization / Vertex selection
+    for (int k=0; k<pcd_size_; k++) {
+        if (corresp(k,0) != -1) continue; // skip already assigned points - Will only proceed if gaps larger than search radius in ROSA points (after 1st iter)
+        mindst(k,0) = 1e8; // set large to ensure update
+
+        // run while ANY element in corresp is still -1
+        while (!((corresp.array() != -1).all())) {
+            int maxIdx = argmax_eigen(mindst); // maxIdx represents the most distant unassigned point
+
+            if (mindst(maxIdx,0) == 0) break; // If the largest distance value is zero... I.e. all remaining unassinged points are with the radius
+            if (!std::isnan(mindst(maxIdx, 0)) && mindst(maxIdx,0) == 0) break;
+
+            // The current search point
+            search_point.x = pset(maxIdx,0);
+            search_point.y = pset(maxIdx,1);
+            search_point.z = pset(maxIdx,2);
+            
+            // Search for points within the sample_radius of the current search point. 
+            // The indices of the nearest points are set in indxs
+            std::vector<int>().swap(indxs);
+            std::vector<float>().swap(radius_squared_distance);
+            fps_tree.radiusSearch(search_point, sample_radius, indxs, radius_squared_distance);
+
+            int_nidxs = Eigen::Map<Eigen::MatrixXi>(indxs.data(), indxs.size(), 1); // structures the column vector of the nearest neighbours 
+            nIdxs = int_nidxs.cast<double>();
+            extract_corresp = ed_le.rows_ext_M(nIdxs, corresp); // Extract the section corresp according to the indices of the nearest points
+
+            // If all neighbours wihtin sample_radius already has been assigned (neq to -1) the current point is not needed as vertex
+            if ((extract_corresp.array() != -1).all()) {
+                mindst(maxIdx,0) = 0;
+                continue; // Go to loop start
+            }
+
+            // If all neighbours had not been assigned to a corresponding vertex, the current search point is chosen as a new vertex.
+            SSD.skelver.conservativeResize(SSD.skelver.rows()+1, SSD.skelver.cols()); // adds one vertex
+            SSD.skelver.row(SSD.skelver.rows()-1) = pset.row(maxIdx);
+
+            // for every point withing the sample_radius
+            for (int z=0; z<(int)indxs.size(); z++) {
+
+                // if the distance value at this index is unassigned OR if a previous assignment has a larger distance
+                // the point is assigned to the new vertex
+                // this ensures that every point is assigned to their closest vertex
+                if (std::isnan(mindst(indxs[z],0)) || mindst(indxs[z],0) > radius_squared_distance[z]) {
+                    mindst(indxs[z],0) = radius_squared_distance[z]; // update minimum distance to closest vertex
+                    corresp(indxs[z], 0) = SSD.skelver.rows() - 1; // Keeps track of which skeleton vertice each point corresponds to (0, 1, 2, 3...)
+                }
+            }
+        }
+    }
+}
+
 // Refine local points here... 
 // Do lineextract, recenter etc in global refinement
 
@@ -450,7 +515,7 @@ void RosaMain::lineextract() {
     pcl::PointXYZ search_point;
     Eigen::MatrixXi int_nidxs;
     Eigen::MatrixXd nIdxs, extract_corresp;
-
+    
     for (int i=0; i<pcd_size_; i++) {
         if ((int)SSD.neighs[i].size() <= outlier) {
             // if the point has less than or equal to 2 neighbours it is classified as a bad_sample
@@ -740,22 +805,22 @@ void RosaMain::recenter() {
 
 void RosaMain::restore_scale() {
     SSD.rosa_pts->clear();
-    // for (int i=0; i<(int)SSD.vertices.rows(); i++) {
-    //     pcl::PointXYZ pt;
-    //     pt.x = SSD.vertices(i,0) * norm_scale + centroid(0);
-    //     pt.y = SSD.vertices(i,1) * norm_scale + centroid(1);
-    //     pt.z = SSD.vertices(i,2) * norm_scale + centroid(2);
-    //     SSD.rosa_pts->points.push_back(pt);
-    // }
-
-    /* For pts after dcrosa() */
-    for (int i=0; i<(int)pset.rows(); i++) {
+    for (int i=0; i<(int)SSD.vertices.rows(); i++) {
         pcl::PointXYZ pt;
-        pt.x = pset(i,0) * norm_scale + centroid(0);
-        pt.y = pset(i,1) * norm_scale + centroid(1);
-        pt.z = pset(i,2) * norm_scale + centroid(2);
+        pt.x = SSD.vertices(i,0) * norm_scale + centroid(0);
+        pt.y = SSD.vertices(i,1) * norm_scale + centroid(1);
+        pt.z = SSD.vertices(i,2) * norm_scale + centroid(2);
         SSD.rosa_pts->points.push_back(pt);
     }
+
+    /* For pts after dcrosa() */
+    // for (int i=0; i<(int)pset.rows(); i++) {
+    //     pcl::PointXYZ pt;
+    //     pt.x = pset(i,0) * norm_scale + centroid(0);
+    //     pt.y = pset(i,1) * norm_scale + centroid(1);
+    //     pt.z = pset(i,2) * norm_scale + centroid(2);
+    //     SSD.rosa_pts->points.push_back(pt);
+    // }
 }
 
 void RosaMain::rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals) {
