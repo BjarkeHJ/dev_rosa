@@ -62,6 +62,7 @@ struct SkeletonDecomposition
 
     Eigen::MatrixXd skelver;
 
+    Eigen::MatrixXd corresp;
     Eigen::MatrixXi skeladj;
     Eigen::MatrixXd vertices;
     Eigen::MatrixXi edges;
