@@ -16,7 +16,7 @@
         <param name="dcrosa_iter" type="int" value="3"/> <!-- Number of iterations for smoothing and shrinkign ROSA points -->
 
         <param name="sample_radius" type="float" value="0.1"/> <!-- Sampling radius for ROSA points selection -->
-        <param name="alpha" type="float" value="0.3"/> <!-- Scalefactor for recentering to fuse euclidian and projection -->
+        <param name="alpha" type="float" value="0.5"/> <!-- Scalefactor for recentering to fuse euclidian and projection -->
         
         <!-- Global Skeleton -->
         <param name="tolerance" type="float" value="2.0"/> <!-- Radius for global skeleton increment -->

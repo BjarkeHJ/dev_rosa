@@ -54,9 +54,12 @@ void RosaMain::main() {
     mahanalobis_mat(radius_neigh);
     drosa();
     dcrosa();
-    lineextract();
-    recenter();
+    vertex_sampling();
+    vertex_recenter();
     restore_scale();
+
+    // lineextract();
+    // recenter();
 
     debug_cloud_2 = SSD.rosa_pts;
     // debug_cloud_2 = temp_ver_cloud; // Vertices after FPS
@@ -419,14 +422,17 @@ void RosaMain::dcrosa() {
 
 void RosaMain::vertex_sampling() {
     Extra_Del ed_le;
+
     int outlier = 2;
     Eigen::MatrixXi bad_sample = Eigen::MatrixXi::Zero(pcd_size_, 1);
+    
     pcl::PointXYZ pset_pt;
     pset_cloud->clear();
     for (int i=0; i<pcd_size_; i++) {
         if ((int)SSD.neighs[i].size() <= outlier) {
             bad_sample(i,0) = 1;
         }
+
         pset_pt.x = pset(i,0);
         pset_pt.y = pset(i,1);
         pset_pt.z = pset(i,2);
@@ -435,8 +441,8 @@ void RosaMain::vertex_sampling() {
 
     // mindst stores the minimum squared distance from each unassigned point to the nearest assigned skeleton point. 
     Eigen::MatrixXd mindst = Eigen::MatrixXd::Constant(pcd_size_, 1, std::numeric_limits<double>::quiet_NaN()); 
-    
-    Eigen::MatrixXd corresp = Eigen::MatrixXd::Constant(pcd_size_, 1, -1); // initialized with value -1
+    SSD.corresp = Eigen::MatrixXd::Constant(pcd_size_, 1, -1); // initialized with value -1
+
     Eigen::MatrixXi int_nidxs;
     Eigen::MatrixXd nIdxs;
     Eigen::MatrixXd extract_corresp;
@@ -444,15 +450,15 @@ void RosaMain::vertex_sampling() {
     std::vector<int> indxs;
     std::vector<float> radius_squared_distance;
     fps_tree.setInputCloud(pset_cloud);
-    SSD.skelver(0,3);
+    SSD.skelver.resize(0,3);
 
     // Farthest Point Sampling (FPS) / Skeletonization / Vertex selection
     for (int k=0; k<pcd_size_; k++) {
-        if (corresp(k,0) != -1) continue; // skip already assigned points - Will only proceed if gaps larger than search radius in ROSA points (after 1st iter)
+        if (SSD.corresp(k,0) != -1) continue; // skip already assigned points - Will only proceed if gaps larger than search radius in ROSA points (after 1st iter)
         mindst(k,0) = 1e8; // set large to ensure update
 
         // run while ANY element in corresp is still -1
-        while (!((corresp.array() != -1).all())) {
+        while (!((SSD.corresp.array() != -1).all())) {
             int maxIdx = argmax_eigen(mindst); // maxIdx represents the most distant unassigned point
 
             if (mindst(maxIdx,0) == 0) break; // If the largest distance value is zero... I.e. all remaining unassinged points are with the radius
@@ -471,7 +477,7 @@ void RosaMain::vertex_sampling() {
 
             int_nidxs = Eigen::Map<Eigen::MatrixXi>(indxs.data(), indxs.size(), 1); // structures the column vector of the nearest neighbours 
             nIdxs = int_nidxs.cast<double>();
-            extract_corresp = ed_le.rows_ext_M(nIdxs, corresp); // Extract the section corresp according to the indices of the nearest points
+            extract_corresp = ed_le.rows_ext_M(nIdxs, SSD.corresp); // Extract the section corresp according to the indices of the nearest points
 
             // If all neighbours wihtin sample_radius already has been assigned (neq to -1) the current point is not needed as vertex
             if ((extract_corresp.array() != -1).all()) {
@@ -491,10 +497,68 @@ void RosaMain::vertex_sampling() {
                 // this ensures that every point is assigned to their closest vertex
                 if (std::isnan(mindst(indxs[z],0)) || mindst(indxs[z],0) > radius_squared_distance[z]) {
                     mindst(indxs[z],0) = radius_squared_distance[z]; // update minimum distance to closest vertex
-                    corresp(indxs[z], 0) = SSD.skelver.rows() - 1; // Keeps track of which skeleton vertice each point corresponds to (0, 1, 2, 3...)
+                    SSD.corresp(indxs[z], 0) = SSD.skelver.rows() - 1; // Keeps track of which skeleton vertice each point corresponds to (0, 1, 2, 3...)
                 }
             }
         }
+    }
+}
+
+void RosaMain::vertex_recenter() {
+    Extra_Del ed_rr;
+    std::vector<int> idxs;
+    std::vector<int> deleted_vertices_idx;
+    Eigen::MatrixXi ne_idxs;
+    Eigen::MatrixXd ne_idxs_d;
+    Eigen::MatrixXi del_idxs;
+    Eigen::MatrixXd del_idxs_d;
+    Eigen::MatrixXd extract_pts;
+    Eigen::MatrixXd extract_nrs;
+    Eigen::Vector3d proj_center;
+    Eigen::Vector3d eucl_center;
+    Eigen::Vector3d fuse_center;
+    Eigen::MatrixXd temp_skelver;
+
+    // Extract points corresponding to each vertex
+    // Delete vertices if too few points are assigned that vertex
+    for (int i=0; i<SSD.skelver.rows(); i++) {
+        idxs.clear();
+        for (int j=0; j<SSD.corresp.rows(); j++) {
+            if (SSD.corresp(j,0) == (double)i) {
+                idxs.push_back(j);
+            }
+        }
+        if (idxs.size() < 3) {
+            deleted_vertices_idx.push_back(i);
+        }
+        else {
+            ne_idxs = Eigen::Map<Eigen::MatrixXi>(idxs.data(), idxs.size(), 1);
+            ne_idxs_d = ne_idxs.cast<double>();
+            extract_pts = ed_rr.rows_ext_M(ne_idxs_d, SSD.pts_matrix);
+            extract_nrs = ed_rr.rows_ext_M(ne_idxs_d, SSD.nrs_matrix);
+            proj_center = closest_projection_point(extract_pts, extract_nrs);
+
+            if (abs(proj_center(0)) < 1 && abs(proj_center(1)) < 1 && abs(proj_center(2)) < 1) {
+                eucl_center = extract_pts.colwise().mean();
+                fuse_center = alpha_recenter * proj_center + (1 - alpha_recenter)*eucl_center;
+                SSD.skelver(i,0) = fuse_center(0);
+                SSD.skelver(i,1) = fuse_center(1);
+                SSD.skelver(i,2) = fuse_center(2);
+            }
+        }
+    }
+
+    // Remove invalid vertices
+    if (!deleted_vertices_idx.empty()) {
+        int del_size = deleted_vertices_idx.size();
+        del_idxs = Eigen::Map<Eigen::MatrixXi>(deleted_vertices_idx.data(), del_size, 1);
+        del_idxs_d = del_idxs.cast<double>();
+        temp_skelver = ed_rr.rows_del_M(del_idxs_d, SSD.skelver); // Delete rows...
+        SSD.skelver = temp_skelver;
+        SSD.vertices = SSD.skelver;
+    }
+    else {
+        SSD.vertices = SSD.skelver;
     }
 }
 
@@ -590,6 +654,7 @@ void RosaMain::lineextract() {
             }
         }
     }
+
     temp_ver_cloud->clear();
     for (int i=0; i<(int)SSD.skelver.rows(); i++) {
         pcl::PointXYZ ptt;
@@ -605,7 +670,6 @@ void RosaMain::lineextract() {
     Adj = Eigen::MatrixXi::Zero(dim, dim);
     std::vector<int> temp_surf(k_KNN);
     std::vector<int> good_neighs;
-
 
     for (int pIdx=0; pIdx<pcd_size_; pIdx++) {
         temp_surf.clear();
@@ -733,6 +797,15 @@ void RosaMain::lineextract() {
     }
     // Final adjenceny matrix of the skeleton...
     SSD.skeladj = Adj;
+
+    // temp_ver_cloud->clear();
+    // for (int i=0; i<(int)SSD.skelver.rows(); i++) {
+    //     pcl::PointXYZ ptt;
+    //     ptt.x = SSD.skelver(i,0) * norm_scale + centroid(0);
+    //     ptt.y = SSD.skelver(i,1) * norm_scale + centroid(1);
+    //     ptt.z = SSD.skelver(i,2) * norm_scale + centroid(2);
+    //     temp_ver_cloud->points.push_back(ptt);
+    // }
 }
 
 void RosaMain::recenter() {
@@ -757,7 +830,6 @@ void RosaMain::recenter() {
             deleted_vertice_idxs.push_back(i);
         }
         else {
-            
             ne_idxs = Eigen::Map<Eigen::MatrixXi>(idxs.data(), idxs.size(), 1);
             ne_idxs_d = ne_idxs.cast<double>();
             extract_pts = ed_rr.rows_ext_M(ne_idxs_d, SSD.pts_matrix);
@@ -774,7 +846,7 @@ void RosaMain::recenter() {
         }
     }
     
-    // Remove invalide vertices
+    // Remove invalid vertices
     int del_size = deleted_vertice_idxs.size();
     d_idxs = Eigen::Map<Eigen::MatrixXi>(deleted_vertice_idxs.data(), deleted_vertice_idxs.size(), 1);
     d_idxs_d = d_idxs.cast<double>();
@@ -788,6 +860,7 @@ void RosaMain::recenter() {
     temp_skeladj_d2 = ed_rr.cols_del_M(d_idxs_d, temp_skeladj_d2);
     SSD.skelver = temp_skelver;
     SSD.skeladj = temp_skeladj_d2.block(0, 0, temp_skeladj_d2.cols(), temp_skeladj_d2.cols()).cast<int>();
+
     SSD.vertices = SSD.skelver;
 
     // Final edge adjustments..

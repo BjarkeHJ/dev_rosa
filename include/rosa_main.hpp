@@ -62,6 +62,7 @@ struct SkeletonDecomposition
 
     Eigen::MatrixXd skelver;
 
+    Eigen::MatrixXd corresp;
     Eigen::MatrixXi skeladj;
     Eigen::MatrixXd vertices;
     Eigen::MatrixXi edges;
@@ -92,11 +93,11 @@ public:
     void drosa();
     void dcrosa();
     void vertex_sampling();
+    void vertex_recenter();
 
     void lineextract();
     void recenter();
     void restore_scale();
-    
     
     void rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals);
     Eigen::Matrix3d create_orthonormal_frame(Eigen::Vector3d &v);
