@@ -4,8 +4,8 @@
         <param name="num_scans" type="int" value="1"/> <!-- Number of Lidar scans before publishing -->
 
         <!-- ROSA MAIN -->
-        <param name="max_lidar_dist" type="float" value="25"/> <!-- Max distance for lidar points used for calculations -->
-        <param name="max_pts" type="int" value="200"/> <!-- Max number of points in downsampled cloud -->
+        <param name="max_lidar_dist" type="float" value="20"/> <!-- Max distance for lidar points used for calculations -->
+        <param name="max_pts" type="int" value="500"/> <!-- Max number of points in downsampled cloud -->
         <param name="min_pts" type="int" value="100"/> <!-- Min number of points in downsampled cloud (For reliable computation) -->
 
         <param name="normal_est_KNN" type="int" value="10"/> <!-- K nearest neighbours for normal estimation -->
@@ -16,9 +16,9 @@
         <param name="dcrosa_iter" type="int" value="3"/> <!-- Number of iterations for smoothing and shrinkign ROSA points -->
 
         <param name="sample_radius" type="float" value="0.1"/> <!-- Sampling radius for ROSA points selection -->
-        <param name="alpha" type="float" value="0.5"/> <!-- Scalefactor for recentering to fuse euclidian and projection -->
+        <param name="alpha" type="float" value="0.3"/> <!-- Scalefactor for recentering to fuse euclidian and projection -->
         
         <!-- Global Skeleton -->
-        <param name="tolerance" type="float" value="2.0"/> <!-- Radius for global skeleton increment -->
+        <param name="tolerance" type="float" value="5.0"/> <!-- Radius for global skeleton increment -->
     </node>
 </launch>

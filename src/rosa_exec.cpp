@@ -67,9 +67,9 @@ void RosaNode::init_modules() {
     /* Initialization modules and share ROS2 node */
     RCLCPP_INFO(this->get_logger(), "Initializing Modules...");
     skel_op.reset(new RosaMain);
-    GS.reset(new GlobSkel);
     skel_op->init(shared_from_this());
-    GS->init(shared_from_this());
+    // GS.reset(new GlobSkel);
+    // GS->init(shared_from_this());
     init_flag = true;
 }
 
@@ -107,24 +107,20 @@ void RosaNode::run() {
     if (run_flag) {
         run_flag = false;
 
+        skel_op->transform = curr_tf; // Set transform of current points...
         skel_op->main(); // Run main ROSA points algorithm
-        GS->update_skel(skel_op->getRosaPoints(), curr_tf); // Update current structure skeleton... 
 
-        RCLCPP_INFO(this->get_logger(), "ROSA Skeleton size: %ld", GS->global_skeleton->points.size());
+        // GS->update_skel(skel_op->getRosaPoints(), curr_tf); // Update current structure skeleton... 
+        // RCLCPP_INFO(this->get_logger(), "ROSA Skeleton size: %ld", GS->global_skeleton->points.size());
 
         // Temp: Debugger publisher - Specify pointcloud quantity to visualize in Rviz2...
         sensor_msgs::msg::PointCloud2 db_out;
-        // pcl::toROSMsg(*GS->global_skeleton, db_out);
-        // db_out.header.frame_id = "World";
         pcl::toROSMsg(*skel_op->debug_cloud, db_out);
-        db_out.header.frame_id = "lidar_frame";
+        db_out.header.frame_id = "World";
         db_out.header.stamp = this->get_clock()->now();
         debug_pub_->publish(db_out);
 
         sensor_msgs::msg::PointCloud2 db_out_2;
-        // pcl::toROSMsg(*GS->debug_cloud, db_out_2);
-        // db_out_2.header.frame_id = "World";
-        
         pcl::toROSMsg(*skel_op->debug_cloud_2, db_out_2);
         db_out_2.header.frame_id = "lidar_frame";
         db_out_2.header.stamp = this->get_clock()->now();

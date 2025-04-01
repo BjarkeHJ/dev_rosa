@@ -21,6 +21,7 @@
 #include <pcl/common/centroid.h>
 #include <pcl/features/normal_3d.h>
 #include <pcl/kdtree/kdtree.h>
+#include <pcl/octree/octree_search.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -61,22 +62,23 @@ struct SkeletonDecomposition
     std::vector<std::vector<int>> neighs_surf;
 
     Eigen::MatrixXd skelver;
-
     Eigen::MatrixXd corresp;
-    Eigen::MatrixXi skeladj;
-    Eigen::MatrixXd vertices;
-    Eigen::MatrixXi edges;
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr rosa_pts;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr rosa_pts; // Rosa pts for global skeleton increment 
+    pcl::PointCloud<pcl::PointXYZ>::Ptr global_skeleton;
+
+    Eigen::MatrixXd global_vertices; // Global skeleton vertices
+    Eigen::MatrixXd global_edges; // Global skeleton edges
+    Eigen::MatrixXi global_adj; // Global skeleton adjacency matrix
+
+
 };
-
 
 class RosaMain {
 public:
     /* Functions */
     void init(std::shared_ptr<rclcpp::Node> node);
     void main();
-    pcl::PointCloud<pcl::PointXYZ>::ConstPtr getRosaPoints() const;
 
     /* Data */
     pcl::PointCloud<pcl::PointXYZ>::Ptr debug_cloud;
@@ -84,7 +86,9 @@ public:
 
     /* Utils */
     SkeletonDecomposition SSD;
-    private:
+    geometry_msgs::msg::TransformStamped transform;
+
+private:
     /* Functions */
     void distance_filter();
     void normalize();
@@ -94,11 +98,10 @@ public:
     void dcrosa();
     void vertex_sampling();
     void vertex_recenter();
-
-    void lineextract();
-    void recenter();
     void restore_scale();
+    void incremental_graph();
     
+
     void rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals);
     Eigen::Matrix3d create_orthonormal_frame(Eigen::Vector3d &v);
     Eigen::MatrixXd compute_active_samples(int &idx, Eigen::Vector3d &p_cut, Eigen::Vector3d &v_cut);
@@ -122,6 +125,7 @@ public:
     double delta; // Plane slice thickness -- Will be set equal to leaf_size_ds once determined
     double sample_radius; // Sample radius for line extraction
     double alpha_recenter; // rosa recentering...
+    double tolerance; // Tolerance for incremental skeleton 
     
     /* Data */
     int pcd_size_;
@@ -142,6 +146,7 @@ public:
     pcl::KdTreeFLANN<pcl::PointXYZ> rosa_tree;
     pcl::KdTreeFLANN<pcl::PointXYZ> pset_tree;
     pcl::KdTreeFLANN<pcl::PointXYZ> fps_tree;
+    std::unique_ptr<pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>> global_octree;
 
 };
 
