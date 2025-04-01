@@ -589,15 +589,13 @@ void RosaMain::incremental_graph() {
         return;
     }
 
-    global_octree->setInputCloud(SSD.global_skeleton);
-    global_octree->addPointsFromInputCloud();
-
     Eigen::Quaternionf q(transform.transform.rotation.w,
-                        transform.transform.rotation.x,
-                        transform.transform.rotation.y,
-                        transform.transform.rotation.z);
-    Eigen::Matrix3f R = q.toRotationMatrix();
-
+        transform.transform.rotation.x,
+        transform.transform.rotation.y,
+        transform.transform.rotation.z);
+        Eigen::Matrix3f R = q.toRotationMatrix();
+    
+    pcl::PointCloud<pcl::PointXYZ>::Ptr t_rosa(new pcl::PointCloud<pcl::PointXYZ>);
     for (const auto &pt : SSD.rosa_pts->points) {
         Eigen::Vector3f p(pt.x, pt.y, pt.z);
         p = R * p;
@@ -605,12 +603,43 @@ void RosaMain::incremental_graph() {
         p.y() += transform.transform.translation.y;
         p.z() += transform.transform.translation.z;
         pcl::PointXYZ pt_t(p.x(), p.y(), p.z());
-        std::vector<int> pt_idx_search;
-        std::vector<float> pt_sq_dist;
-        if (!global_octree->radiusSearch(pt_t, tolerance, pt_idx_search, pt_sq_dist)) {
-            global_octree->addPointToCloud(pt_t, SSD.global_skeleton);
-        }
+        t_rosa->points.push_back(pt_t);
     }
+
+    icp.setInputSource(t_rosa);
+    icp.setInputTarget(SSD.global_skeleton);
+    icp.setMaxCorrespondenceDistance(1.0);
+    icp.setMaximumIterations(5);
+    icp.setTransformationEpsilon(1e-6);
+    icp.setEuclideanFitnessEpsilon(1e-6);
+    icp.align(*t_rosa);
+
+    *SSD.global_skeleton += *t_rosa;
+
+    pcl::VoxelGrid<pcl::PointXYZ> voxel;
+    voxel.setInputCloud(SSD.global_skeleton);
+    voxel.setLeafSize(tolerance, tolerance, tolerance); // Adjust resolution as needed
+    voxel.filter(*SSD.global_skeleton);
+
+    // global_octree->setInputCloud(SSD.global_skeleton);
+    // global_octree->addPointsFromInputCloud();
+        
+    // for (const auto &pt : SSD.rosa_pts->points) {
+    //     Eigen::Vector3f p(pt.x, pt.y, pt.z);
+    //     p = R * p;
+    //     p.x() += transform.transform.translation.x;
+    //     p.y() += transform.transform.translation.y;
+    //     p.z() += transform.transform.translation.z;
+    //     pcl::PointXYZ pt_t(p.x(), p.y(), p.z());
+    //     std::vector<int> pt_idx_search;
+    //     std::vector<float> pt_sq_dist;
+    //     if (!global_octree->radiusSearch(pt_t, tolerance, pt_idx_search, pt_sq_dist)) {
+    //         global_octree->addPointToCloud(pt_t, SSD.global_skeleton);
+    //     }
+    // }
+
+    int skel_size = SSD.global_skeleton->points.size();
+    std::cout << "Global Skeleton Size: " << skel_size << std::endl;
 
 }
 

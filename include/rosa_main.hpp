@@ -26,6 +26,8 @@
 #include <pcl/filters/passthrough.h>
 #include <pcl_conversions/pcl_conversions.h>
 
+#include <pcl/registration/icp.h>
+
 #include <Eigen/Core>
 
 #include "Extra_Del.hpp"
@@ -147,6 +149,8 @@ private:
     pcl::KdTreeFLANN<pcl::PointXYZ> pset_tree;
     pcl::KdTreeFLANN<pcl::PointXYZ> fps_tree;
     std::unique_ptr<pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>> global_octree;
+    
+    pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
 
 };
 

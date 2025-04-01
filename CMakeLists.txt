@@ -37,8 +37,7 @@ find_package(PCL 1.12 REQUIRED)
 add_executable(${EXEC_NAME}
                 src/rosa_exec.cpp
                 src/rosa_main.cpp
-                src/Extra_Del.cpp
-                src/global_skel.cpp)
+                src/Extra_Del.cpp)
 
 target_include_directories(${EXEC_NAME} PUBLIC
                             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

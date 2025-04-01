@@ -1,5 +1,4 @@
 #include "rosa_main.hpp"
-#include "global_skel.hpp"
 
 class RosaNode : public rclcpp::Node {
 public:
@@ -38,7 +37,6 @@ private:
 
     /* Utils */
     std::shared_ptr<RosaMain> skel_op;
-    std::shared_ptr<GlobSkel> GS;
 };
 
 void RosaNode::init() {
@@ -60,7 +58,6 @@ void RosaNode::init() {
     
     debug_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/debugger", 10);
     debug_pub_2_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/debugger_2", 10);
-    marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/rosa_dir", 10);
 }
 
 void RosaNode::init_modules() {
@@ -68,8 +65,6 @@ void RosaNode::init_modules() {
     RCLCPP_INFO(this->get_logger(), "Initializing Modules...");
     skel_op.reset(new RosaMain);
     skel_op->init(shared_from_this());
-    // GS.reset(new GlobSkel);
-    // GS->init(shared_from_this());
     init_flag = true;
 }
 
@@ -110,9 +105,6 @@ void RosaNode::run() {
         skel_op->transform = curr_tf; // Set transform of current points...
         skel_op->main(); // Run main ROSA points algorithm
 
-        // GS->update_skel(skel_op->getRosaPoints(), curr_tf); // Update current structure skeleton... 
-        // RCLCPP_INFO(this->get_logger(), "ROSA Skeleton size: %ld", GS->global_skeleton->points.size());
-
         // Temp: Debugger publisher - Specify pointcloud quantity to visualize in Rviz2...
         sensor_msgs::msg::PointCloud2 db_out;
         pcl::toROSMsg(*skel_op->debug_cloud, db_out);
@@ -127,8 +119,6 @@ void RosaNode::run() {
         debug_pub_2_->publish(db_out_2);
     }
 }
-
-
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
