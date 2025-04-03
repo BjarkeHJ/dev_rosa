@@ -74,7 +74,6 @@ void RosaNode::pcd_callback(const sensor_msgs::msg::PointCloud2::SharedPtr pcd_m
     scan_counter++;
     if (scan_counter == N_scans) {
         set_cloud();
-        batch_pcd->clear();
         scan_counter = 0;   
     }
 }
@@ -94,7 +93,9 @@ void RosaNode::set_cloud() {
     
     // Set current pointcloud if not empty
     if (batch_pcd->empty()) return;
+    skel_op->SSD.pts_->clear();
     pcl::copyPointCloud(*batch_pcd, *skel_op->SSD.pts_);
+    batch_pcd->clear();
     run_flag = true; // Ready to run ROSA algorithm
 }
 

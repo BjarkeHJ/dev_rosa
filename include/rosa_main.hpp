@@ -19,14 +19,13 @@
 
 #include <pcl/common/common.h>
 #include <pcl/common/centroid.h>
+#include <pcl_conversions/pcl_conversions.h>
+
 #include <pcl/features/normal_3d.h>
 #include <pcl/kdtree/kdtree.h>
 #include <pcl/octree/octree_search.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/passthrough.h>
-#include <pcl_conversions/pcl_conversions.h>
-
-#include <pcl/registration/icp.h>
 
 #include <Eigen/Core>
 
@@ -63,7 +62,7 @@ struct SkeletonDecomposition
     std::vector<std::vector<int>> neighs_new;
     std::vector<std::vector<int>> neighs_surf;
 
-    Eigen::MatrixXd skelver;
+    Eigen::MatrixXd skelver; // Current skeleton vertices
     Eigen::MatrixXd corresp;
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr rosa_pts; // Rosa pts for global skeleton increment 
@@ -102,7 +101,7 @@ private:
     void vertex_recenter();
     void restore_scale();
     void incremental_graph();
-    
+    void lineextraction();
 
     void rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals);
     Eigen::Matrix3d create_orthonormal_frame(Eigen::Vector3d &v);
@@ -133,25 +132,16 @@ private:
     int pcd_size_;
     double norm_scale;
     Eigen::Vector4d centroid;
-    Eigen::MatrixXd pset; //Point set
-    Eigen::MatrixXd vset; //Vector set
-    Eigen::MatrixXd vvar;  //Vector variance
-    pcl::PointCloud<pcl::PointXYZ>::Ptr temp_ver_cloud;
+    Eigen::MatrixXd pset; //point set
+    Eigen::MatrixXd vset; //symm vector set
+    Eigen::MatrixXd vvar;  //symm vector variance
     pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud;
     Eigen::MatrixXi adj_before_collapse;
     
     /* Utils */
-    pcl::PassThrough<pcl::PointXYZ> ptf; // pass through filter for distance filtering
-    pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> ne; // Normal estimation
-    pcl::VoxelGrid<pcl::PointNormal> vgf; // Voxel Grid Filter for downsamplings
-    pcl::KdTreeFLANN<pcl::PointXYZ> surf_kdtree;
-    pcl::KdTreeFLANN<pcl::PointXYZ> rosa_tree;
-    pcl::KdTreeFLANN<pcl::PointXYZ> pset_tree;
-    pcl::KdTreeFLANN<pcl::PointXYZ> fps_tree;
     std::unique_ptr<pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>> global_octree;
-    
-    pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
 
 };
+
 
 #endif //ROSA_MAIN

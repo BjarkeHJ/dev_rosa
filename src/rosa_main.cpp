@@ -28,15 +28,14 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     
     /* Initialize data structures */
     global_octree.reset(new pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>(tolerance));
-
     SSD.pts_.reset(new pcl::PointCloud<pcl::PointXYZ>);
     SSD.normals_.reset(new pcl::PointCloud<pcl::Normal>);
     SSD.cloud_w_normals.reset(new pcl::PointCloud<pcl::PointNormal>);
     pset_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
     SSD.rosa_pts.reset(new pcl::PointCloud<pcl::PointXYZ>);
     SSD.global_skeleton.reset(new pcl::PointCloud<pcl::PointXYZ>);
+    SSD.global_vertices.resize(0,3);
 
-    temp_ver_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
     debug_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
     debug_cloud_2.reset(new pcl::PointCloud<pcl::PointXYZ>);
 
@@ -45,7 +44,9 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
 
 void RosaMain::main() {
     auto start = std::chrono::high_resolution_clock::now();
+
     distance_filter();
+
     pcd_size_ = SSD.pts_->points.size();
     if (!pcd_size_) return; // No points within range...
 
@@ -54,14 +55,16 @@ void RosaMain::main() {
         std::cout << "Point Cloud size below nMin... Skipping..." << std::endl; 
         return; // Too few points to reliably compute ROSA pts
     }
-
     mahanalobis_mat(radius_neigh);
     drosa();
     dcrosa();
     vertex_sampling();
     vertex_recenter();
     restore_scale();
+    // SSD.global_skeleton->clear(); // For visualizing only current vertices... (debug)
+
     incremental_graph();
+    lineextraction();
 
     debug_cloud = SSD.global_skeleton;
     debug_cloud_2 = SSD.rosa_pts;
@@ -73,11 +76,14 @@ void RosaMain::main() {
 }
 
 void RosaMain::distance_filter() {
-    /* Distance Filtering */
+    pcl::PassThrough<pcl::PointXYZ> ptf;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr temp_cloud(new pcl::PointCloud<pcl::PointXYZ>);
     ptf.setInputCloud(SSD.pts_);
     ptf.setFilterFieldName("x");
     ptf.setFilterLimits(-pts_dist_lim, pts_dist_lim);
-    ptf.filter(*SSD.pts_);
+    ptf.filter(*temp_cloud);  
+
+    ptf.setInputCloud(temp_cloud);
     ptf.setFilterFieldName("y");
     ptf.setFilterLimits(-pts_dist_lim, pts_dist_lim);
     ptf.filter(*SSD.pts_);
@@ -101,30 +107,28 @@ void RosaMain::normalize() {
         SSD.pts_->points[i].z = (SSD.pts_->points[i].z - centroid(2)) / norm_scale;
     }
     
-    /* Normal Estimation */
-    if (SSD.pts_->points.empty()) {
-        std::cout << "Filtered out all points - Cloud empty" << std::endl;
-        return;
-    }
-
-    pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>());
     SSD.normals_->clear();
+    pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> ne;
+    pcl::search::KdTree<pcl::PointXYZ>::Ptr ne_tree(new pcl::search::KdTree<pcl::PointXYZ>);
     ne.setInputCloud(SSD.pts_);
-    ne.setSearchMethod(tree);
+    ne.setSearchMethod(ne_tree);
     ne.setKSearch(ne_KNN);
     ne.compute(*SSD.normals_); 
 
     pcl::concatenateFields(*SSD.pts_, *SSD.normals_, *SSD.cloud_w_normals);
 
     /* Dynamic Voxel Grid Downsampling */
-    leaf_size_ds = 0.01;
-    while (pcd_size_ > nMax) {
-        vgf.setInputCloud(SSD.cloud_w_normals);
-        vgf.setLeafSize(leaf_size_ds, leaf_size_ds, leaf_size_ds);
-        vgf.filter(*SSD.cloud_w_normals);
-        pcd_size_ = SSD.cloud_w_normals->points.size();
-        if (pcd_size_ <= nMax) break;
-        leaf_size_ds += 0.001;
+    if (pcd_size_ > nMax) {
+        pcl::VoxelGrid<pcl::PointNormal> vgf;
+        leaf_size_ds = 0.001;
+        while (pcd_size_ > nMax) {
+            vgf.setInputCloud(SSD.cloud_w_normals);
+            vgf.setLeafSize(leaf_size_ds, leaf_size_ds, leaf_size_ds);
+            vgf.filter(*SSD.cloud_w_normals);
+            pcd_size_ = SSD.cloud_w_normals->points.size();
+            if (pcd_size_ <= nMax) break;
+            leaf_size_ds += 0.001;
+        }
     }
 
     pcd_size_ = SSD.cloud_w_normals->points.size();
@@ -139,7 +143,6 @@ void RosaMain::normalize() {
         pt.x = SSD.cloud_w_normals->points[i].x;
         pt.y = SSD.cloud_w_normals->points[i].y;
         pt.z = SSD.cloud_w_normals->points[i].z;
-        // Friday 28/3: changed sign as it was missed prev
         nrm.normal_x = -SSD.cloud_w_normals->points[i].normal_x;
         nrm.normal_y = -SSD.cloud_w_normals->points[i].normal_y;
         nrm.normal_z = -SSD.cloud_w_normals->points[i].normal_z;
@@ -161,9 +164,9 @@ void RosaMain::mahanalobis_mat(double &radius_r) {
     /* Neighbour searhc based on correlation between neighbouring normal vectors */
     SSD.neighs.clear();
     SSD.neighs.resize(pcd_size_);
-    pcl::KdTreeFLANN<pcl::PointXYZ> tree;
-    tree.setInputCloud(SSD.pts_);
 
+    pcl::KdTreeFLANN<pcl::PointXYZ> maha_tree;
+    maha_tree.setInputCloud(SSD.pts_);
     pcl::PointXYZ search_pt, p1, p2;
     pcl::Normal v1, v2;
     std::vector<int> indxs;
@@ -176,7 +179,7 @@ void RosaMain::mahanalobis_mat(double &radius_r) {
         std::vector<float>().swap(radius_squared_distance);
         p1 = SSD.pts_->points[i]; // current search point
         v1 = SSD.normals_->points[i];
-        tree.radiusSearch(p1, radius_r, indxs, radius_squared_distance); // Radius search
+        maha_tree.radiusSearch(p1, radius_r, indxs, radius_squared_distance); // Radius search
         std::vector<int> temp_neighs;
 
         for (int j=0; j<(int)indxs.size(); j++) {
@@ -227,12 +230,13 @@ void RosaMain::drosa() {
     pcl::PointXYZ search_pt_surf;
 
     // K Nearest neighbours search...
-    surf_kdtree.setInputCloud(SSD.pts_);
+    pcl::KdTreeFLANN<pcl::PointXYZ> surf_tree;
+    surf_tree.setInputCloud(SSD.pts_);
     for (int i=0; i<pcd_size_; i++) {
         std::vector<int>().swap(temp_surf);
         std::vector<float>().swap(nn_squared_distance);
         search_pt_surf = SSD.pts_->points[i];
-        surf_kdtree.nearestKSearch(search_pt_surf, k_KNN, temp_surf, nn_squared_distance);
+        surf_tree.nearestKSearch(search_pt_surf, k_KNN, temp_surf, nn_squared_distance);
         SSD.neighs_surf.push_back(temp_surf);
     }
 
@@ -331,8 +335,9 @@ void RosaMain::drosa() {
             poorIdx.push_back(pIdx);
         }
     }
-
+    
     /* Reposition poor point to the nearest good point */
+    pcl::KdTreeFLANN<pcl::PointXYZ> rosa_tree;
     rosa_tree.setInputCloud(goodPts);
     for (int pp=0; pp<(int)poorIdx.size(); pp++) {
         int pair = 1;
@@ -342,6 +347,7 @@ void RosaMain::drosa() {
         search_pt.z = SSD.pts_->points[poorIdx[pp]].z;
         std::vector<int> pair_id(pair);
         std::vector<float> nn_squared_distance(pair);
+
         rosa_tree.nearestKSearch(search_pt, pair, pair_id, nn_squared_distance);
         Eigen::Vector3d pairpos;
         pairpos(0) = goodPts->points[pair_id[0]].x;
@@ -374,7 +380,6 @@ void RosaMain::dcrosa() {
         pset = newpset;
 
         /* Shrinking */
-        // pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pset_cloud->clear();
         pset_cloud->width = pset.rows();
         pset_cloud->height = 1;
@@ -385,9 +390,11 @@ void RosaMain::dcrosa() {
             pset_cloud->points[i].y = pset(i,1);
             pset_cloud->points[i].z = pset(i,2);
         }
+        if (pset_cloud->points.empty()) return;
 
+        pcl::KdTreeFLANN<pcl::PointXYZ> pset_tree;
         pset_tree.setInputCloud(pset_cloud);
-        
+
         // Confidence calc
         Eigen::VectorXd conf = Eigen::VectorXd::Zero(pset.rows()); // zero initialized confidence vector
         newpset = pset; 
@@ -425,24 +432,30 @@ void RosaMain::dcrosa() {
 
 void RosaMain::vertex_sampling() {
     Extra_Del ed_le;
-
-    int outlier = 2;
-    Eigen::MatrixXi bad_sample = Eigen::MatrixXi::Zero(pcd_size_, 1);
-    
     pcl::PointXYZ pset_pt;
+    Eigen::MatrixXi bad_sample_idx;
+    Eigen::MatrixXd bad_sample_idx_d;
+    bad_sample_idx.resize(0,1);
     pset_cloud->clear();
+    
+    int outlier = 5;
     for (int i=0; i<pcd_size_; i++) {
         if ((int)SSD.neighs[i].size() <= outlier) {
-            bad_sample(i,0) = 1;
+            // If a point has less than "outlier" nbs it is marked as a bad_sample
+            bad_sample_idx.conservativeResize(bad_sample_idx.rows()+1, bad_sample_idx.cols());
+            bad_sample_idx(bad_sample_idx.rows()-1, 0) = i;
         }
-
-        pset_pt.x = pset(i,0);
-        pset_pt.y = pset(i,1);
-        pset_pt.z = pset(i,2);
-        pset_cloud->points.push_back(pset_pt);
+        else {
+            pset_pt.x = pset(i,0);
+            pset_pt.y = pset(i,1);
+            pset_pt.z = pset(i,2);
+            pset_cloud->points.push_back(pset_pt);
+        }
     }
 
-    if (pset_cloud->points.empty()) return;
+    pcd_size_ = pset_cloud->points.size();
+    bad_sample_idx_d = bad_sample_idx.cast<double>();
+    pset = ed_le.rows_del_M(bad_sample_idx_d, pset); // Remove bad samples from pset...
 
     // mindst stores the minimum squared distance from each unassigned point to the nearest assigned skeleton point. 
     Eigen::MatrixXd mindst = Eigen::MatrixXd::Constant(pcd_size_, 1, std::numeric_limits<double>::quiet_NaN()); 
@@ -454,9 +467,11 @@ void RosaMain::vertex_sampling() {
     pcl::PointXYZ search_point;
     std::vector<int> indxs;
     std::vector<float> radius_squared_distance;
+    
+    pcl::KdTreeFLANN<pcl::PointXYZ> fps_tree;
     fps_tree.setInputCloud(pset_cloud);
     SSD.skelver.resize(0,3);
-
+    
     // Farthest Point Sampling (FPS) / Skeletonization / Vertex selection
     for (int k=0; k<pcd_size_; k++) {
         if (SSD.corresp(k,0) != -1) continue; // skip already assigned points - Will only proceed if gaps larger than search radius in ROSA points (after 1st iter)
@@ -572,30 +587,29 @@ void RosaMain::restore_scale() {
         pt.z = SSD.skelver(i,2) * norm_scale + centroid(2);
         SSD.rosa_pts->points.push_back(pt);
     }
+
+    // for (int i=0; i<(int)pset.rows(); i++) {
+    //     pcl::PointXYZ pt;
+    //     pt.x = pset(i,0) * norm_scale + centroid(0);
+    //     pt.y = pset(i,1) * norm_scale + centroid(1);
+    //     pt.z = pset(i,2) * norm_scale + centroid(2);
+    //     SSD.rosa_pts->points.push_back(pt);
+    // }
 }
 
 void RosaMain::incremental_graph() {
     if (!SSD.rosa_pts || SSD.rosa_pts->points.empty()) return;
-
-    // The first vertex...
-    if (SSD.global_skeleton->empty()) {
-        Eigen::Vector4f first_vertex;
-        pcl::PointXYZ first_point; 
-        pcl::compute3DCentroid(*SSD.rosa_pts, first_vertex);
-        first_point.x = first_vertex.x();
-        first_point.y = first_vertex.y();
-        first_point.z = first_vertex.z();
-        SSD.global_skeleton->points.push_back(first_point);
-        return;
-    }
 
     Eigen::Quaternionf q(transform.transform.rotation.w,
         transform.transform.rotation.x,
         transform.transform.rotation.y,
         transform.transform.rotation.z);
         Eigen::Matrix3f R = q.toRotationMatrix();
-    
-    pcl::PointCloud<pcl::PointXYZ>::Ptr t_rosa(new pcl::PointCloud<pcl::PointXYZ>);
+
+    global_octree->deleteTree(); 
+    global_octree->setInputCloud(SSD.global_skeleton);
+    global_octree->addPointsFromInputCloud();
+
     for (const auto &pt : SSD.rosa_pts->points) {
         Eigen::Vector3f p(pt.x, pt.y, pt.z);
         p = R * p;
@@ -603,45 +617,160 @@ void RosaMain::incremental_graph() {
         p.y() += transform.transform.translation.y;
         p.z() += transform.transform.translation.z;
         pcl::PointXYZ pt_t(p.x(), p.y(), p.z());
-        t_rosa->points.push_back(pt_t);
+        std::vector<int> pt_idx_search;
+        std::vector<float> pt_sq_dist;
+        if (!global_octree->radiusSearch(pt_t, tolerance, pt_idx_search, pt_sq_dist)) {
+            global_octree->addPointToCloud(pt_t, SSD.global_skeleton);
+            Eigen::Vector3d ver(pt_t.x, pt_t.y, pt_t.z);
+            SSD.global_vertices.conservativeResize(SSD.global_vertices.rows()+1, SSD.global_vertices.cols());
+            SSD.global_vertices.row(SSD.global_vertices.rows()-1) = ver.transpose();
+        }
+    }
+}
+
+void RosaMain::lineextraction() {
+    Extra_Del ed_le;
+
+    int dim = SSD.global_skeleton->points.size();
+
+    Eigen::MatrixXi Adj;
+    Adj = Eigen::MatrixXi::Zero(dim, dim);
+    std::vector<int> rm_idx;
+
+    // int K = 3;
+    double sr = 5*tolerance;
+
+    // Create Adjacency Matrix
+    pcl::KdTreeFLANN<pcl::PointXYZ> lext_tree; // For line extraction
+    lext_tree.setInputCloud(SSD.global_skeleton);
+    for (int i=0; i<dim; i++) {
+        std::vector<int> idxs;
+        std::vector<float> dists;
+        pcl::PointXYZ ver = SSD.global_skeleton->points[i];
+        // if (lext_tree.nearestKSearch(ver, K, idxs, dists) > 0) {
+        if (lext_tree.radiusSearch(ver, sr, idxs, dists) > 0) {
+            if (idxs.size() > 0) {
+                for (size_t j=0; j<idxs.size(); j++) {
+                    Adj(i, idxs[j]) = 1;
+                    Adj(idxs[j], i) = 1;
+                }
+            }
+            else {
+                rm_idx.push_back(i);
+            }
+        }
     }
 
-    icp.setInputSource(t_rosa);
-    icp.setInputTarget(SSD.global_skeleton);
-    icp.setMaxCorrespondenceDistance(1.0);
-    icp.setMaximumIterations(5);
-    icp.setTransformationEpsilon(1e-6);
-    icp.setEuclideanFitnessEpsilon(1e-6);
-    icp.align(*t_rosa);
+    std::vector<int> ec_neighs;
 
-    *SSD.global_skeleton += *t_rosa;
+    while (1) {
+        int tricount = 0;
+        Eigen::MatrixXi skeds; // Store edges in triangles
+        Eigen::MatrixXd skcst; // Store edge distances
+        skeds.resize(0,2);
+        skcst.resize(0,1);
 
-    pcl::VoxelGrid<pcl::PointXYZ> voxel;
-    voxel.setInputCloud(SSD.global_skeleton);
-    voxel.setLeafSize(tolerance, tolerance, tolerance); // Adjust resolution as needed
-    voxel.filter(*SSD.global_skeleton);
+        for (int i=0; i<dim; i++) {
+            ec_neighs.clear();
 
-    // global_octree->setInputCloud(SSD.global_skeleton);
-    // global_octree->addPointsFromInputCloud();
-        
-    // for (const auto &pt : SSD.rosa_pts->points) {
-    //     Eigen::Vector3f p(pt.x, pt.y, pt.z);
-    //     p = R * p;
-    //     p.x() += transform.transform.translation.x;
-    //     p.y() += transform.transform.translation.y;
-    //     p.z() += transform.transform.translation.z;
-    //     pcl::PointXYZ pt_t(p.x(), p.y(), p.z());
-    //     std::vector<int> pt_idx_search;
-    //     std::vector<float> pt_sq_dist;
-    //     if (!global_octree->radiusSearch(pt_t, tolerance, pt_idx_search, pt_sq_dist)) {
-    //         global_octree->addPointToCloud(pt_t, SSD.global_skeleton);
-    //     }
-    // }
+            for (int col=0; col<dim; col++) {
+                if (Adj(i, col) == 1 && col>i) {
+                    ec_neighs.push_back(col);
+                }
+            }
+            for (int j=0; j<(int)ec_neighs.size(); j++) {
+                for (int k=j+1; k<(int)ec_neighs.size(); k++) {
+                    if (Adj(ec_neighs[j], ec_neighs[k]) == 1) {
+                        tricount++;
 
-    int skel_size = SSD.global_skeleton->points.size();
-    std::cout << "Global Skeleton Size: " << skel_size << std::endl;
+                        // Store the edge between current vertex and the neighbour j.
+                        skeds.conservativeResize(skeds.rows()+1, skeds.cols());
+                        skeds(skeds.rows()-1, 0) = i;
+                        skeds(skeds.rows()-1, 1) = ec_neighs[j];
 
+                        // Store edge length between current vertex and neighbour j.
+                        skcst.conservativeResize(skcst.rows()+1, skcst.cols());
+                        skcst(skcst.rows()-1, 0) = (SSD.global_vertices.row(i) - SSD.global_vertices.row(ec_neighs[j])).norm();
+
+                        // Store the edge between the connected vertice pair 
+                        skeds.conservativeResize(skeds.rows()+1, skeds.cols());
+                        skeds(skeds.rows()-1, 0) = ec_neighs[j];
+                        skeds(skeds.rows()-1, 1) = ec_neighs[k];
+
+                        // Store this edge length
+                        skcst.conservativeResize(skcst.rows()+1, skcst.cols());
+                        skcst(skcst.rows()-1, 0) = (SSD.global_vertices.row(ec_neighs[j]) - SSD.global_vertices.row(ec_neighs[k])).norm();
+
+                        // Store the edge between the current vertex and neighbour k
+                        skeds.conservativeResize(skeds.rows()+1, skeds.cols());
+                        skeds(skeds.rows()-1, 0) = ec_neighs[k];
+                        skeds(skeds.rows()-1, 1) = i;
+
+                        // And the edge length...
+                        skcst.conservativeResize(skcst.rows()+1, skcst.cols());
+                        skcst(skcst.rows()-1, 0) = (SSD.global_vertices.row(ec_neighs[k]) - SSD.global_vertices.row(i)).norm();
+                    }
+                }
+            }
+        }
+
+        if (tricount == 0) break; // No triangles found...
+        Eigen::MatrixXd edge_rows;
+        edge_rows.resize(2,3);
+
+        Eigen::MatrixXd::Index minRow, minCol;
+        skcst.minCoeff(&minRow, &minCol); // Find the minimum distance edge
+        int idx = minRow;
+        Eigen::Vector2i edge = skeds.row(idx);
+        edge_rows.row(0) = SSD.global_vertices.row(edge(0));
+        edge_rows.row(1) = SSD.global_vertices.row(edge(1));
+        SSD.global_vertices.row(edge(0)) = edge_rows.colwise().mean();
+        rm_idx.push_back(edge(1));
+
+        for (int k=0; k<Adj.rows(); k++) {
+            if (Adj(edge(1), k) == 1) {
+                Adj(edge(0), k) = 1;
+                Adj(k, edge(0)) = 1;
+            }
+        }
+        Adj.row(edge(1)).setZero();
+        Adj.col(edge(1)).setZero();
+    }
+
+    int del_size = rm_idx.size();
+    std::sort(rm_idx.begin(), rm_idx.end());
+
+    Eigen::MatrixXi del_idxs;
+    Eigen::MatrixXd del_idxs_d;
+    Eigen::MatrixXd temp_skelver;
+    Eigen::MatrixXd temp_adj;
+    Eigen::MatrixXd temp_adj_2;
+    Eigen::MatrixXd fill = Eigen::MatrixXd::Zero(del_size, Adj.cols());
+
+    del_idxs = Eigen::Map<Eigen::MatrixXi>(rm_idx.data(), del_size, 1);
+    del_idxs_d = del_idxs.cast<double>();
+    temp_skelver = ed_le.rows_del_M(del_idxs_d, SSD.global_vertices); // Delete rows...
+    // temp_adj = Adj.cast<double>();
+    // temp_adj = ed_le.rows_del_M(del_idxs_d, temp_adj);
+    // temp_adj_2.resize(Adj.cols(), Adj.cols());
+    // temp_adj_2 << temp_adj, fill;
+
+    // SSD.global_adj = temp_adj_2.block(0, 0, temp_adj_2.cols(), temp_adj_2.cols()).cast<int>();
+    SSD.global_vertices = temp_skelver;
+    SSD.global_skeleton->clear();
+    for (int i=0; i<(int)SSD.global_vertices.rows(); i++) {
+        pcl::PointXYZ pt;
+        pt.x = SSD.global_vertices(i,0);
+        pt.y = SSD.global_vertices(i,1);
+        pt.z = SSD.global_vertices(i,2);
+        SSD.global_skeleton->points.push_back(pt);
+    }
 }
+
+
+
+
+/* Helper Functions */
 
 void RosaMain::rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals) {
     Eigen::Matrix3d M;
@@ -666,14 +795,14 @@ Eigen::Matrix3d RosaMain::create_orthonormal_frame(Eigen::Vector3d &v) {
      /* random process for generating orthonormal basis */
      v = v/v.norm();
      double TH_ZERO = 1e-10;
-     // srand((unsigned)time(NULL));
+    //  srand((unsigned)time(NULL));
+
      Eigen::Matrix3d M = Eigen::Matrix3d::Zero();
      M(0,0) = v(0); 
      M(0,1) = v(1); 
      M(0,2) = v(2);
      Eigen::Vector3d new_vec, temp_vec;
  
-     // Seems inefficient to just iterate until satisfaction? - Rewrite using deterministic linear algebra (cross product method)?
      // The outer for loops finds an orthonormal basis
      for (int i=1; i<3; ++i) {
        new_vec.setRandom();
