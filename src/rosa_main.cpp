@@ -45,9 +45,8 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
 
 void RosaMain::main() {
     auto start = std::chrono::high_resolution_clock::now();
-
+    
     distance_filter();
-
     pcd_size_ = SSD.pts_->points.size();
     if (!pcd_size_) return; // No points within range...
 
