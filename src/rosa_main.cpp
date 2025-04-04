@@ -45,7 +45,7 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
 
 void RosaMain::main() {
     auto start = std::chrono::high_resolution_clock::now();
-    
+
     distance_filter();
     pcd_size_ = SSD.pts_->points.size();
     if (!pcd_size_) return; // No points within range...
@@ -63,10 +63,18 @@ void RosaMain::main() {
     local_lineextract();
     vertex_recenter();
 
-    // Do skeleton graph increments before scale restoring
-    // Do 
-
+    // Do skeleton graph increments
+    // Merge vertices based on areas density (mean) - Thinking skeleton extraction of nacelle and house in general... (???)
+    // Do joint handling 
+    
+    // Restore scale
     restore_scale();
+
+    // Generate viewpoints in XY-Plane on either side of the skeleton (three sides if endpoint)
+    // When visiting a viewpoint veryfy its validity (???)
+    // Mark viewpoints / vertices visited (for vertices 1/2 when one side is visited) (???)
+
+
     // SSD.global_skeleton->clear(); // For visualizing only current vertices... (debug)
     incremental_graph();
     global_lineextraction();
