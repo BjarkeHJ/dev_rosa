@@ -63,7 +63,9 @@ struct SkeletonDecomposition
     std::vector<std::vector<int>> neighs_surf;
 
     Eigen::MatrixXd skelver; // Current skeleton vertices
+    Eigen::MatrixXd skelver_scaled;
     Eigen::MatrixXd corresp;
+    Eigen::MatrixXi Adj;
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr rosa_pts; // Rosa pts for global skeleton increment 
     pcl::PointCloud<pcl::PointXYZ>::Ptr global_skeleton;
@@ -71,7 +73,7 @@ struct SkeletonDecomposition
     Eigen::MatrixXd global_vertices; // Global skeleton vertices
     Eigen::MatrixXd global_edges; // Global skeleton edges
     Eigen::MatrixXi global_adj; // Global skeleton adjacency matrix
-
+    Eigen::MatrixXd global_conf; // Vertex confidence... 
 
 };
 
@@ -84,6 +86,7 @@ public:
     /* Data */
     pcl::PointCloud<pcl::PointXYZ>::Ptr debug_cloud;
     pcl::PointCloud<pcl::PointXYZ>::Ptr debug_cloud_2;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr pts_dist_filt;
 
     /* Utils */
     SkeletonDecomposition SSD;
@@ -98,10 +101,13 @@ private:
     void drosa();
     void dcrosa();
     void vertex_sampling();
+    void local_lineextract();
     void vertex_recenter();
     void restore_scale();
     void incremental_graph();
-    void lineextraction();
+    void global_lineextraction();
+    void vertex_confidence();
+
 
     void rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals);
     Eigen::Matrix3d create_orthonormal_frame(Eigen::Vector3d &v);
@@ -136,7 +142,7 @@ private:
     Eigen::MatrixXd vset; //symm vector set
     Eigen::MatrixXd vvar;  //symm vector variance
     pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud;
-    Eigen::MatrixXi adj_before_collapse;
+    Eigen::MatrixXi bad_sample;
     
     /* Utils */
     std::unique_ptr<pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>> global_octree;

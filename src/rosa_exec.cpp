@@ -13,7 +13,7 @@ public:
     void run();
 
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pcd_sub_;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr rosa_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pcd_repub_;
     rclcpp::TimerBase::SharedPtr run_timer_;
     
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -21,7 +21,6 @@ public:
     
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_pub_2_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
     
 private:
     /* Params */
@@ -50,7 +49,7 @@ void RosaNode::init() {
     
     /* ROS2 Publisher/Subscribers/Timers */
     pcd_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>("/pointcloud", 10, std::bind(&RosaNode::pcd_callback, this, std::placeholders::_1));
-    rosa_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/pointcloud_repub", 10);
+    pcd_repub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/pointcloud_repub", 10);
     run_timer_ = this->create_wall_timer(std::chrono::milliseconds(50), std::bind(&RosaNode::run, this));
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -118,6 +117,20 @@ void RosaNode::run() {
         db_out_2.header.frame_id = "lidar_frame";
         db_out_2.header.stamp = this->get_clock()->now();
         debug_pub_2_->publish(db_out_2);
+
+        try {
+            geometry_msgs::msg::TransformStamped tf_st = tf_buffer_->lookupTransform("World", "lidar_frame", tf2::TimePointZero);
+            pcl::PointCloud<pcl::PointXYZ>::Ptr tf_pcd(new pcl::PointCloud<pcl::PointXYZ>);
+            pcl_ros::transformPointCloud(*skel_op->pts_dist_filt, *tf_pcd, tf_st);
+            sensor_msgs::msg::PointCloud2 pcd_re;
+            pcl::toROSMsg(*tf_pcd, pcd_re);
+            pcd_re.header.frame_id = "World";
+            pcd_re.header.stamp = this->get_clock()->now();
+            pcd_repub_->publish(pcd_re);
+        }
+        catch (const tf2::TransformException &ex) {
+            RCLCPP_WARN(this->get_logger(), "Could not tranform: %s", ex.what());
+        }
     }
 }
 
