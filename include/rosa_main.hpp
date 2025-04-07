@@ -49,6 +49,45 @@ struct Vector3iCompare // lexicographic ordering: return true if v1 is ordered B
     }
 };
 
+struct SkeletonVertex
+{
+    Eigen::Vector3d position;
+    Eigen::Matrix3d covariance;
+    int observation_count = 0;
+    bool confidence_check = false;
+    Eigen::Vector3d state;
+    Eigen::Matrix3d P;
+};
+
+class VertexLKF {
+public:
+    VertexLKF(double process_noise = 0.001f, double measurement_noise = 0.1f) {
+        Q = Eigen::Matrix3d::Identity() * process_noise;
+        R = Eigen::Matrix3d::Identity() * measurement_noise;
+    }
+    void initialize(Eigen::Vector3d initial_position, Eigen::Matrix3d covariance) {
+        x = initial_position;
+        P = covariance;
+    }
+    void update(const Eigen::Vector3d &z) {
+        // Prediction 
+        Eigen::Vector3d x_pred = x;
+        Eigen::Matrix3d P_pred = P + Q;
+        // Kalman Gain
+        Eigen::Matrix3d K = P_pred * (P_pred + R).inverse();
+        // Correction
+        x = x_pred + K * (z - x_pred);
+        P = (Eigen::Matrix3d::Identity() - K) * P_pred;
+    }
+    Eigen::Vector3d getState() const {return x;}
+    Eigen::Matrix3d getCovariance() const {return P;}
+private:
+    Eigen::Vector3d x;
+    Eigen::Matrix3d P;
+    Eigen::Matrix3d Q;
+    Eigen::Matrix3d R;
+};
+
 
 struct SkeletonDecomposition 
 {
@@ -70,10 +109,10 @@ struct SkeletonDecomposition
     pcl::PointCloud<pcl::PointXYZ>::Ptr rosa_pts; // Rosa pts for global skeleton increment 
     pcl::PointCloud<pcl::PointXYZ>::Ptr global_skeleton;
 
+    std::vector<SkeletonVertex> gskel;
+    Eigen::MatrixXi gadj; // Global skeleton adjacency matrix
+
     Eigen::MatrixXd global_vertices; // Global skeleton vertices
-    Eigen::MatrixXd global_edges; // Global skeleton edges
-    Eigen::MatrixXi global_adj; // Global skeleton adjacency matrix
-    Eigen::MatrixXd global_conf; // Vertex confidence... 
 
 };
 
@@ -103,11 +142,12 @@ private:
     void vertex_sampling();
     void local_lineextract();
     void vertex_recenter();
+    void kf_skeleton_incr();
     void restore_scale();
+    void update_skeleton();
+
     void incremental_graph();
     void global_lineextraction();
-    void vertex_confidence();
-
 
     void rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals);
     Eigen::Matrix3d create_orthonormal_frame(Eigen::Vector3d &v);
@@ -132,7 +172,11 @@ private:
     double delta; // Plane slice thickness -- Will be set equal to leaf_size_ds once determined
     double sample_radius; // Sample radius for line extraction
     double alpha_recenter; // rosa recentering...
-    double tolerance; // Tolerance for incremental skeleton 
+    double tolerance; // Tolerance for incremental skeleton
+
+    int kf_cnt = 0;
+    double kf_dist_th;
+    double kf_conf_th;
     
     /* Data */
     int pcd_size_;
@@ -143,6 +187,7 @@ private:
     Eigen::MatrixXd vvar;  //symm vector variance
     pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud;
     Eigen::MatrixXi bad_sample;
+    std::unordered_map<int, int> local_to_global_map;
     
     /* Utils */
     std::unique_ptr<pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>> global_octree;

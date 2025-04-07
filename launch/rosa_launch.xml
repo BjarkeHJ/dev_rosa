@@ -6,7 +6,7 @@
         <!-- ROSA MAIN -->
         <param name="max_lidar_dist" type="float" value="30"/> <!-- Max distance (radius) for lidar points used for calculations -->
         <param name="max_pts" type="int" value="300"/> <!-- Max number of points in downsampled cloud -->
-        <param name="min_pts" type="int" value="50"/> <!-- Min number of points in downsampled cloud (For reliable computation) -->
+        <param name="min_pts" type="int" value="100"/> <!-- Min number of points in downsampled cloud (For reliable computation) -->
 
         <param name="normal_est_KNN" type="int" value="10"/> <!-- K nearest neighbours for normal estimation -->
         <param name="neighbour_radius" type="float" value="0.05"/> <!-- radius for mahalanobis neighbour search -->
@@ -18,7 +18,13 @@
         <param name="sample_radius" type="float" value="0.05"/> <!-- Sampling radius for ROSA points selection -->
         <param name="alpha" type="float" value="0.3"/> <!-- Scalefactor for recentering to fuse euclidian and projection -->
         
-        <!-- Global Skeleton -->
+        <!-- Global Skeleton Vertex Fusion - After Scale Restoration -->
+        <param name="kf_dist_th" type="float" value="3.0"/> <!-- Distance threshold for new vertex increment -->
+        <param name="kf_conf_th" type="float" value="0.2"/> <!-- Confidence threshold for valid vertex -->
+
+
+
+        <!-- Global Skeleton (not used atm) -->
         <param name="tolerance" type="float" value="5.0"/> <!-- Radius for global skeleton increment - Space between vertices -->
     </node>
 </launch>
