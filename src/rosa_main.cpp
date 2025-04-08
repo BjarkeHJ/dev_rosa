@@ -743,6 +743,8 @@ void RosaMain::restore_scale() {
 }
 
 void RosaMain::kf_skeleton_incr() {
+    local_to_global_map.clear(); // Clear map...
+
     Eigen::Quaterniond q(transform.transform.rotation.w,
         transform.transform.rotation.x,
         transform.transform.rotation.y,
@@ -787,7 +789,7 @@ void RosaMain::kf_skeleton_incr() {
                     }
                 }
 
-                break;
+                break; // break if close point found...
             }
         }
 
@@ -819,6 +821,8 @@ void RosaMain::kf_skeleton_incr() {
             }
         }
     }
+
+    
     
     // If the confidence of a point is not satisfactory within two iteration -- Remove it again
     if (kf_cnt == 2) {
@@ -832,6 +836,7 @@ void RosaMain::kf_skeleton_incr() {
                         SSD.gadj.conservativeResize(n-1, n-1);
                     }
                 }
+
             else {
                     i++;
                 }
@@ -839,20 +844,23 @@ void RosaMain::kf_skeleton_incr() {
 
         kf_cnt = 0;
     }
-    kf_cnt++;    
+    kf_cnt++;
+
 
     /* DOES NOT WORK YET - I THINK THE ADJENCENY IS NOT ENTIRELY CORRECT */
     
     // Merge vertices if too close...
     for (int i=0; i<(int)SSD.gskel.size(); i++) {
         for (int j=i+1; j<(int)SSD.gskel.size(); j++) {
-            if (SSD.gadj(i,j) == 1 && (SSD.gskel[i].position - SSD.gskel[j].position).norm() < kf_dist_th*0.8) {
+            if (SSD.gadj(i,j) == 1 && (SSD.gskel[i].position - SSD.gskel[j].position).norm() < kf_dist_th) {
                 std::cout << "Merging Vertices..." << std::endl;
-
-                int tot_obs = SSD.gskel[i].observation_count + SSD.gskel[i].observation_count;
+                
+                // Weigthed merge of vertices based on observation count
+                int tot_obs = SSD.gskel[i].observation_count + SSD.gskel[j].observation_count;
                 Eigen::Vector3d merged_pos = 
                                 (SSD.gskel[i].position * SSD.gskel[i].observation_count +
                                  SSD.gskel[j].position * SSD.gskel[j].observation_count) / tot_obs;
+
                 SSD.gskel[i].position = merged_pos;
                 SSD.gskel[i].observation_count = tot_obs;
 
@@ -862,6 +870,8 @@ void RosaMain::kf_skeleton_incr() {
                 }
 
                 SSD.gskel.erase(SSD.gskel.begin() +j);
+                // Shift matrix content left/up and resize -> row/column removed
+                // .block(startRow, startCol, numRows, numCols) extracts the region of interest
                 SSD.gadj.block(j, 0, SSD.gadj.rows()-j-1, SSD.gadj.cols()) = SSD.gadj.block(j+1, 0, SSD.gadj.rows()-j-1, SSD.gadj.cols());
                 SSD.gadj.block(0, j, SSD.gadj.rows(), SSD.gadj.cols()-j-1) = SSD.gadj.block(0, j+1, SSD.gadj.rows(), SSD.gadj.cols()-j-1);
                 SSD.gadj.conservativeResize(SSD.gadj.rows()-1, SSD.gadj.cols()-1);
@@ -871,10 +881,19 @@ void RosaMain::kf_skeleton_incr() {
         }
     }
 
+    // for (int l=0; l<SSD.Adj.rows(); l++) {
+    //     for (int m=0; m<SSD.Adj.row(l).size(); m++) {
+    //         std::cout << SSD.Adj(l,m) << " ";
+    //     }
+    //     std::cout << "" << std::endl;
+    // }
 
     std::cout << "Global Adjacency Matrix Size: " << SSD.gadj.rows() << ", " << SSD.gadj.cols() << std::endl;
-    for (int k=0; k<(int)SSD.gadj.rows(); k++) {
-        std::cout << SSD.gadj(0,k) << std::endl;
+    for (int l=0; l<SSD.gadj.rows(); l++) {
+        for (int m=0; m<SSD.gadj.row(l).size(); m++) {
+            std::cout << SSD.gadj(l,m) << " ";
+        }
+        std::cout << "" << std::endl;
     }
 }
                     
@@ -901,6 +920,10 @@ void RosaMain::update_skeleton() {
     //     SSD.global_skeleton->points.push_back(pt);
     // }
 }
+
+
+
+
 
 // void RosaMain::incremental_graph() {
 //     // if (!SSD.rosa_pts || SSD.rosa_pts->points.empty()) return;
