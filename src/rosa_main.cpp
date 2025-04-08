@@ -15,7 +15,8 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     node->declare_parameter<double>("tolerance", 1.0);
     node->declare_parameter<double>("kf_dist_th", 1.0);
     node->declare_parameter<double>("kf_conf_th", 1.0);
-
+    node->declare_parameter<double>("kf_process_noise", 1.0);
+    node->declare_parameter<double>("kf_meas_noise", 1.0);
 
     pts_dist_lim = node->get_parameter("max_lidar_dist").as_double();
     ne_KNN = node->get_parameter("normal_est_KNN").as_int();
@@ -30,6 +31,8 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     tolerance = node->get_parameter("tolerance").as_double();
     kf_dist_th = node->get_parameter("kf_dist_th").as_double();
     kf_conf_th = node->get_parameter("kf_conf_th").as_double();
+    kf_pn = node->get_parameter("kf_process_noise").as_double();
+    kf_mn = node->get_parameter("kf_meas_noise").as_double();
 
     /* Initialize data structures */
     global_octree.reset(new pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>(tolerance));
@@ -38,6 +41,7 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     SSD.cloud_w_normals.reset(new pcl::PointCloud<pcl::PointNormal>);
     pset_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
     SSD.rosa_pts.reset(new pcl::PointCloud<pcl::PointXYZ>);
+    SSD.ver_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>);
     SSD.global_skeleton.reset(new pcl::PointCloud<pcl::PointXYZ>);
     SSD.global_vertices.resize(0,3);
 
@@ -46,7 +50,6 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
     pts_dist_filt.reset(new pcl::PointCloud<pcl::PointXYZ>);
 
     th_mah = 0.1 * radius_neigh;
-    SSD.gadj.resize(0,0);
 }
 
 void RosaMain::main() {
@@ -70,17 +73,31 @@ void RosaMain::main() {
     vertex_recenter();
     restore_scale();
     kf_skeleton_incr();
-        
+    graph_adj();
+    // global_lineextraction();
+    graph_decomp();
+    vertex_merge();
+
     // Merge vertices based on areas density (mean) - Thinking skeleton extraction of nacelle and house in general... (???)
     // Do joint handling 
     
     update_skeleton();
 
     std::cout << "Global Skeleton Size: " << SSD.global_skeleton->points.size() << std::endl;
+    std::cout << "Global Adjency Matrix Size: " << SSD.gadj.rows() << " " << SSD.gadj.cols() << std::endl;
+    std::cout << "gskel size" << SSD.gskel_val.size() << std::endl;
+    std::cout << "Number of joints: " << SSD.joint_ids.size() << std::endl;
 
     // Generate viewpoints in XY-Plane on either side of the skeleton (three sides if endpoint)
     // When visiting a viewpoint veryfy its validity (???)
     // Mark viewpoints / vertices visited (for vertices 1/2 when one side is visited) (???)
+
+    // for (int i=0; i<(int)SSD.gadj.rows(); i++) {
+    //     for (int j=0; j<(int)SSD.gadj.row(i).size(); j++) {
+    //         std::cout << SSD.gadj(i,j) << " ";
+    //     }
+    //     std::cout << "" << std::endl;
+    // }
 
 
     // SSD.global_skeleton->clear(); // For visualizing only current vertices... (debug)
@@ -88,8 +105,15 @@ void RosaMain::main() {
     // global_lineextraction();
 
     debug_cloud = SSD.global_skeleton;
-    debug_cloud_2 = SSD.rosa_pts;
-    // debug_cloud_2 = temp_ver_cloud; // Vertices after FPS
+
+    debug_cloud_2->clear();
+    for (const auto &id : SSD.joint_ids) {
+        pcl::PointXYZ ptt;
+        ptt.x = SSD.gskel_val[id].position(0);
+        ptt.y = SSD.gskel_val[id].position(1);
+        ptt.z = SSD.gskel_val[id].position(2);
+        debug_cloud_2->points.push_back(ptt);
+    }
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end - start;
@@ -633,6 +657,12 @@ void RosaMain::local_lineextract() {
         SSD.skelver.row(edge(0)) = edge_rows.colwise().mean();
         SSD.skelver.row(edge(1)).setConstant(std::numeric_limits<double>::quiet_NaN());
 
+        for(int r=0; r<SSD.corresp.rows(); r++) {
+            if (SSD.corresp(r,0) == (double)edge(1)) {
+                SSD.corresp(r,0) = (double)edge(0);
+            }
+        }
+
         for (int k=0; k<SSD.Adj.rows(); k++) {
             // If any vertex was connected to the redundant vertex in the triangle
             // connect it to the new vertex (mean)
@@ -644,12 +674,6 @@ void RosaMain::local_lineextract() {
 
         SSD.Adj.row(edge(1)) = Eigen::MatrixXi::Zero(1, SSD.Adj.cols());
         SSD.Adj.col(edge(1)) = Eigen::MatrixXi::Zero(SSD.Adj.rows(), 1);
-
-        for(int r=0; r<SSD.corresp.rows(); r++) {
-            if (SSD.corresp(r,0) == (double)edge(1)) {
-                SSD.corresp(r,0) = (double)edge(0);
-            }
-        }
     }
 }
 
@@ -701,19 +725,20 @@ void RosaMain::vertex_recenter() {
     // Remove invalid vertices
     int del_size = deleted_vertices_idx.size();
     if (del_size > 0) {
-        Eigen::MatrixXd fill = Eigen::MatrixXd::Zero(del_size, SSD.Adj.cols());
-        Eigen::MatrixXd temp_skeladj_d = SSD.Adj.cast<double>();
-        Eigen::MatrixXd temp_skeladj_d_2;
         // resize skelver
         del_idxs = Eigen::Map<Eigen::MatrixXi>(deleted_vertices_idx.data(), del_size, 1);
         del_idxs_d = del_idxs.cast<double>();
         SSD.skelver = ed_rr.rows_del_M(del_idxs_d, SSD.skelver); // Delete rows...
+        
         // resize adj matrix
-        temp_skeladj_d = ed_rr.rows_del_M(del_idxs_d, temp_skeladj_d);
-        temp_skeladj_d_2.resize(SSD.Adj.cols(), SSD.Adj.cols());
-        temp_skeladj_d_2 << temp_skeladj_d, fill;
-        temp_skeladj_d_2 = ed_rr.cols_del_M(del_idxs_d, temp_skeladj_d_2);
-        SSD.Adj = temp_skeladj_d_2.block(0, 0, temp_skeladj_d_2.cols(), temp_skeladj_d_2.cols()).cast<int>();
+        // Eigen::MatrixXd fill = Eigen::MatrixXd::Zero(del_size, SSD.Adj.cols());
+        // Eigen::MatrixXd temp_skeladj_d = SSD.Adj.cast<double>();
+        // Eigen::MatrixXd temp_skeladj_d_2;
+        // temp_skeladj_d = ed_rr.rows_del_M(del_idxs_d, temp_skeladj_d);
+        // temp_skeladj_d_2.resize(SSD.Adj.cols(), SSD.Adj.cols());
+        // temp_skeladj_d_2 << temp_skeladj_d, fill;
+        // temp_skeladj_d_2 = ed_rr.cols_del_M(del_idxs_d, temp_skeladj_d_2);
+        // SSD.Adj = temp_skeladj_d_2.block(0, 0, temp_skeladj_d_2.cols(), temp_skeladj_d_2.cols()).cast<int>();
     }
 }
 
@@ -723,28 +748,9 @@ void RosaMain::restore_scale() {
     for (int i=0; i<(int)SSD.skelver.rows(); i++) {
         SSD.skelver_scaled.row(i) = SSD.skelver.row(i) * norm_scale + centroid3;
     }
-    
-    // SSD.rosa_pts->clear();
-    // for (int i=0; i<(int)SSD.skelver.rows(); i++) {
-    //     pcl::PointXYZ pt;
-    //     pt.x = SSD.skelver(i,0) * norm_scale + centroid(0);
-    //     pt.y = SSD.skelver(i,1) * norm_scale + centroid(1);
-    //     pt.z = SSD.skelver(i,2) * norm_scale + centroid(2);
-    //     SSD.rosa_pts->points.push_back(pt);
-    // }
-
-    // for (int i=0; i<(int)pset.rows(); i++) {
-    //     pcl::PointXYZ pt;
-    //     pt.x = pset(i,0) * norm_scale + centroid(0);
-    //     pt.y = pset(i,1) * norm_scale + centroid(1);
-    //     pt.z = pset(i,2) * norm_scale + centroid(2);
-    //     SSD.rosa_pts->points.push_back(pt);
-    // }
 }
 
 void RosaMain::kf_skeleton_incr() {
-    local_to_global_map.clear(); // Clear map...
-
     Eigen::Quaterniond q(transform.transform.rotation.w,
         transform.transform.rotation.x,
         transform.transform.rotation.y,
@@ -762,7 +768,7 @@ void RosaMain::kf_skeleton_incr() {
         for (auto &gver : SSD.gskel) {
             // If the vertex is close to a global vertex -- Update using LKF
             if ((gver.position - ver).norm() < kf_dist_th) {
-                VertexLKF kf;
+                VertexLKF kf(kf_pn, kf_mn);
                 kf.initialize(gver.position, gver.covariance);
                 kf.update(ver);
 
@@ -770,25 +776,12 @@ void RosaMain::kf_skeleton_incr() {
                 gver.covariance = kf.getCovariance();
                 gver.observation_count++;
 
-                // If position moves close to a different vertex - Merge?
-
                 double trace = gver.covariance.trace();
                 if (trace < kf_conf_th) {
                     gver.confidence_check = true;
                 }
 
                 matched = true;
-
-                // **** This search method can maybe be rewritten...
-                for (auto it=SSD.gskel.begin(); it!=SSD.gskel.end(); it++) {
-                    // If "it" is a reference to the same element as &gver
-                    // the adress of "gver" has been found in the global skeleton (gskel)
-                    if (&(*it) == &gver) {
-                        int global_idx = std::distance(SSD.gskel.begin(), it); // Finds the index of "it" in "gskel"...
-                        local_to_global_map[i] = global_idx; // Maps the local to the global index...
-                    }
-                }
-
                 break; // break if close point found...
             }
         }
@@ -801,42 +794,15 @@ void RosaMain::kf_skeleton_incr() {
             new_ver.observation_count = 1;
             new_ver.confidence_check = false;
             SSD.gskel.push_back(new_ver);
-
-            // Update the global adjacency matrix with the new global vertex...
-            // Keep track of local adjacency and include it in the global
-            int new_global_idx = SSD.gskel.size() - 1;
-            local_to_global_map[i] = new_global_idx;
-
-            int n = SSD.gskel.size();
-            SSD.gadj.conservativeResize(n,n);
-            SSD.gadj.rightCols(1).setZero();
-            SSD.gadj.bottomRows(1).setZero();
-
-            for (int j=0; j<=i; j++) {
-                if (SSD.Adj(i,j) == 1 && local_to_global_map.count(j)) {
-                    int gj = local_to_global_map[j]; // fetch the global index from the map
-                    SSD.gadj(new_global_idx, gj) = 1;
-                    SSD.gadj(gj, new_global_idx) = 1;
-                }
-            }
         }
     }
 
-    
-    
     // If the confidence of a point is not satisfactory within two iteration -- Remove it again
     if (kf_cnt == 2) {
         for (int i=0; i<(int)SSD.gskel.size(); ) {
             if (!SSD.gskel[i].confidence_check) {
-                SSD.gskel.erase(SSD.gskel.begin() + i);
-                
-                int n = SSD.gadj.rows();
-                if (i < n) {
-                        SSD.gadj.block(i, 0, n-i-1, n) = SSD.gadj.block(i+1, 0, n-i-1, n);
-                        SSD.gadj.conservativeResize(n-1, n-1);
-                    }
+                SSD.gskel.erase(SSD.gskel.begin() + i); 
                 }
-
             else {
                     i++;
                 }
@@ -845,168 +811,52 @@ void RosaMain::kf_skeleton_incr() {
         kf_cnt = 0;
     }
     kf_cnt++;
-
-
-    /* DOES NOT WORK YET - I THINK THE ADJENCENY IS NOT ENTIRELY CORRECT */
-    
-    // Merge vertices if too close...
-    for (int i=0; i<(int)SSD.gskel.size(); i++) {
-        for (int j=i+1; j<(int)SSD.gskel.size(); j++) {
-            if (SSD.gadj(i,j) == 1 && (SSD.gskel[i].position - SSD.gskel[j].position).norm() < kf_dist_th) {
-                std::cout << "Merging Vertices..." << std::endl;
-                
-                // Weigthed merge of vertices based on observation count
-                int tot_obs = SSD.gskel[i].observation_count + SSD.gskel[j].observation_count;
-                Eigen::Vector3d merged_pos = 
-                                (SSD.gskel[i].position * SSD.gskel[i].observation_count +
-                                 SSD.gskel[j].position * SSD.gskel[j].observation_count) / tot_obs;
-
-                SSD.gskel[i].position = merged_pos;
-                SSD.gskel[i].observation_count = tot_obs;
-
-                for (int k=0; k<SSD.gadj.rows(); k++) {
-                    if (SSD.gadj(j,k) == 1) SSD.gadj(i,k) = 1;
-                    if (SSD.gadj(k,j) == 1) SSD.gadj(k,i) = 1;
-                }
-
-                SSD.gskel.erase(SSD.gskel.begin() +j);
-                // Shift matrix content left/up and resize -> row/column removed
-                // .block(startRow, startCol, numRows, numCols) extracts the region of interest
-                SSD.gadj.block(j, 0, SSD.gadj.rows()-j-1, SSD.gadj.cols()) = SSD.gadj.block(j+1, 0, SSD.gadj.rows()-j-1, SSD.gadj.cols());
-                SSD.gadj.block(0, j, SSD.gadj.rows(), SSD.gadj.cols()-j-1) = SSD.gadj.block(0, j+1, SSD.gadj.rows(), SSD.gadj.cols()-j-1);
-                SSD.gadj.conservativeResize(SSD.gadj.rows()-1, SSD.gadj.cols()-1);
-
-                j--;
-            }
-        }
-    }
-
-    // for (int l=0; l<SSD.Adj.rows(); l++) {
-    //     for (int m=0; m<SSD.Adj.row(l).size(); m++) {
-    //         std::cout << SSD.Adj(l,m) << " ";
-    //     }
-    //     std::cout << "" << std::endl;
-    // }
-
-    std::cout << "Global Adjacency Matrix Size: " << SSD.gadj.rows() << ", " << SSD.gadj.cols() << std::endl;
-    for (int l=0; l<SSD.gadj.rows(); l++) {
-        for (int m=0; m<SSD.gadj.row(l).size(); m++) {
-            std::cout << SSD.gadj(l,m) << " ";
-        }
-        std::cout << "" << std::endl;
-    }
 }
-                    
-                    
-void RosaMain::update_skeleton() {
-    // Add only confident vertices to the vertex point cloud
-    SSD.global_skeleton->clear();
+
+void RosaMain::graph_adj() {
+    // Create global skeleton adjacency matrix
+    SSD.gskel_val.clear();
+    SSD.ver_cloud->clear();
+
     pcl::PointXYZ pt;
-    for (int i=0; i<(int)SSD.gskel.size(); i++) {
-        if (SSD.gskel[i].confidence_check) {
-            pt.x = SSD.gskel[i].position[0];
-            pt.y = SSD.gskel[i].position[1];
-            pt.z = SSD.gskel[i].position[2];
-            SSD.global_skeleton->points.push_back(pt);
+    for (auto &gver : SSD.gskel) {
+        if (gver.confidence_check) {
+            pt.x = gver.position(0);
+            pt.y = gver.position(1);
+            pt.z = gver.position(2);
+            SSD.ver_cloud->points.push_back(pt);
+            SSD.gskel_val.push_back(gver);
         }
     }
 
-    // SSD.global_skeleton->clear();
-    // pcl::PointXYZ pt;
-    // for (int i=0; i<(int)SSD.gskel.size(); i++) {
-    //     pt.x = SSD.gskel[i].position[0];
-    //     pt.y = SSD.gskel[i].position[1];
-    //     pt.z = SSD.gskel[i].position[2];
-    //     SSD.global_skeleton->points.push_back(pt);
-    // }
+    if (SSD.ver_cloud->points.empty()) return;
+
+    int dim = SSD.gskel_val.size();
+    SSD.gadj = Eigen::MatrixXi::Zero(dim, dim);
+
+    // Radius search for adjacency 
+    pcl::KdTreeFLANN<pcl::PointXYZ> adj_tree;
+    adj_tree.setInputCloud(SSD.ver_cloud);
+
+    for (int i=0; i<(int)SSD.ver_cloud->points.size(); i++) {
+        std::vector<int> indxs;
+        std::vector<float> dists;
+        double r = 1.5 * kf_dist_th;
+        if (adj_tree.radiusSearch(SSD.ver_cloud->points[i], r, indxs, dists) > 0) {
+            for (int j : indxs) {
+                // Set adjacency connection
+                SSD.gadj(i,j) = 1;
+                SSD.gadj(j,i) = 1;
+            }
+        }
+    }
 }
 
-
-
-
-
-// void RosaMain::incremental_graph() {
-//     // if (!SSD.rosa_pts || SSD.rosa_pts->points.empty()) return;
-
-//     Eigen::Quaterniond q(transform.transform.rotation.w,
-//         transform.transform.rotation.x,
-//         transform.transform.rotation.y,
-//         transform.transform.rotation.z);
-//         Eigen::Matrix3d R = q.toRotationMatrix();
-
-//     global_octree->deleteTree(); 
-//     global_octree->setInputCloud(SSD.global_skeleton);
-//     global_octree->addPointsFromInputCloud();
-
-//     for (int i=0; i<(int)SSD.skelver_scaled.rows(); i++) {
-//         Eigen::Vector3d p;
-//         p = R * SSD.skelver_scaled.row(i).transpose();
-//         p.x() += transform.transform.translation.x;
-//         p.y() += transform.transform.translation.y;
-//         p.z() += transform.transform.translation.z;
-
-//         pcl::PointXYZ pt(p.x(), p.y(), p.z());
-//         std::vector<int> pt_idx_search;
-//         std::vector<float> pt_sq_dist;
-//         if (!global_octree->radiusSearch(pt, tolerance, pt_idx_search, pt_sq_dist)) {
-//             global_octree->addPointToCloud(pt, SSD.global_skeleton);
-//             SSD.global_vertices.conservativeResize(SSD.global_vertices.rows()+1, SSD.global_vertices.cols());
-//             SSD.global_vertices.row(SSD.global_vertices.rows()-1) = p;
-//         }
-//     }
-
-//     // for (const auto &pt : SSD.rosa_pts->points) {
-//     //     Eigen::Vector3f p(pt.x, pt.y, pt.z);
-//     //     p = R * p;
-//     //     p.x() += transform.transform.translation.x;
-//     //     p.y() += transform.transform.translation.y;
-//     //     p.z() += transform.transform.translation.z;
-//     //     pcl::PointXYZ pt_t(p.x(), p.y(), p.z());
-//     //     std::vector<int> pt_idx_search;
-//     //     std::vector<float> pt_sq_dist;
-//     //     if (!global_octree->radiusSearch(pt_t, tolerance, pt_idx_search, pt_sq_dist)) {
-//     //         global_octree->addPointToCloud(pt_t, SSD.global_skeleton);
-//     //         Eigen::Vector3d ver(pt_t.x, pt_t.y, pt_t.z);
-//     //         SSD.global_vertices.conservativeResize(SSD.global_vertices.rows()+1, SSD.global_vertices.cols());
-//     //         SSD.global_vertices.row(SSD.global_vertices.rows()-1) = ver.transpose();
-//     //     }
-//     // }
-// }
-
+/* *** LINE EXTRACTION NOT USED *** */
 void RosaMain::global_lineextraction() {
-    Extra_Del ed_le;
-
-    int dim = SSD.global_skeleton->points.size();
-
-    Eigen::MatrixXi Adj;
-    Adj = Eigen::MatrixXi::Zero(dim, dim);
     std::vector<int> rm_idx;
-
-    // Set search radius 
-    // double sr = 2*tolerance;
-    double sr = 2*kf_dist_th;
-
-    // Create Global Adjacency Matrix
-    pcl::KdTreeFLANN<pcl::PointXYZ> lext_tree; // For line extraction
-    lext_tree.setInputCloud(SSD.global_skeleton);
-    for (int i=0; i<dim; i++) {
-        std::vector<int> idxs;
-        std::vector<float> dists;
-        pcl::PointXYZ ver = SSD.global_skeleton->points[i];
-        if (lext_tree.radiusSearch(ver, sr, idxs, dists) > 0) {
-            if (idxs.size() > 1) {
-                for (size_t j=0; j<idxs.size(); j++) {
-                    Adj(i, idxs[j]) = 1;
-                    Adj(idxs[j], i) = 1;
-                }
-            }
-            else {
-                rm_idx.push_back(i);
-            }
-        }
-    }
-
     std::vector<int> ec_neighs;
+    int dim = SSD.gadj.rows();
 
     while (1) {
         int tricount = 0;
@@ -1019,14 +869,18 @@ void RosaMain::global_lineextraction() {
             ec_neighs.clear();
 
             for (int col=0; col<dim; col++) {
-                if (Adj(i, col) == 1 && col>i) {
+                if (SSD.gadj(i, col) == 1 && col>i) {
                     ec_neighs.push_back(col);
                 }
             }
             for (int j=0; j<(int)ec_neighs.size(); j++) {
                 for (int k=j+1; k<(int)ec_neighs.size(); k++) {
-                    if (Adj(ec_neighs[j], ec_neighs[k]) == 1) {
+                    if (SSD.gadj(ec_neighs[j], ec_neighs[k]) == 1) {
                         tricount++;
+
+                        Eigen::Vector3d ver_i = SSD.gskel_val[i].position;
+                        Eigen::Vector3d ver_j = SSD.gskel_val[ec_neighs[j]].position;
+                        Eigen::Vector3d ver_k = SSD.gskel_val[ec_neighs[k]].position;
 
                         // Store the edge between current vertex and the neighbour j.
                         skeds.conservativeResize(skeds.rows()+1, skeds.cols());
@@ -1035,7 +889,7 @@ void RosaMain::global_lineextraction() {
 
                         // Store edge length between current vertex and neighbour j.
                         skcst.conservativeResize(skcst.rows()+1, skcst.cols());
-                        skcst(skcst.rows()-1, 0) = (SSD.global_vertices.row(i) - SSD.global_vertices.row(ec_neighs[j])).norm();
+                        skcst(skcst.rows()-1, 0) = (ver_i - ver_j).norm();
 
                         // Store the edge between the connected vertice pair 
                         skeds.conservativeResize(skeds.rows()+1, skeds.cols());
@@ -1044,7 +898,7 @@ void RosaMain::global_lineextraction() {
 
                         // Store this edge length
                         skcst.conservativeResize(skcst.rows()+1, skcst.cols());
-                        skcst(skcst.rows()-1, 0) = (SSD.global_vertices.row(ec_neighs[j]) - SSD.global_vertices.row(ec_neighs[k])).norm();
+                        skcst(skcst.rows()-1, 0) = (ver_j - ver_k).norm();
 
                         // Store the edge between the current vertex and neighbour k
                         skeds.conservativeResize(skeds.rows()+1, skeds.cols());
@@ -1053,7 +907,7 @@ void RosaMain::global_lineextraction() {
 
                         // And the edge length...
                         skcst.conservativeResize(skcst.rows()+1, skcst.cols());
-                        skcst(skcst.rows()-1, 0) = (SSD.global_vertices.row(ec_neighs[k]) - SSD.global_vertices.row(i)).norm();
+                        skcst(skcst.rows()-1, 0) = (ver_k - ver_i).norm();
                     }
                 }
             }
@@ -1067,42 +921,143 @@ void RosaMain::global_lineextraction() {
         skcst.minCoeff(&minRow, &minCol); // Find the minimum distance edge
         int idx = minRow;
         Eigen::Vector2i edge = skeds.row(idx);
-        edge_rows.row(0) = SSD.global_vertices.row(edge(0));
-        edge_rows.row(1) = SSD.global_vertices.row(edge(1));
-        SSD.global_vertices.row(edge(0)) = edge_rows.colwise().mean();
+        edge_rows.row(0) = SSD.gskel_val[edge(0)].position;
+        edge_rows.row(1) = SSD.gskel_val[edge(1)].position;
+        SSD.gskel_val[edge(0)].position = edge_rows.colwise().mean();
         rm_idx.push_back(edge(1));
 
-        for (int k=0; k<Adj.rows(); k++) {
-            if (Adj(edge(1), k) == 1) {
-                Adj(edge(0), k) = 1;
-                Adj(k, edge(0)) = 1;
+        // Update adjacency matrix for next iteration...
+        for (int k=0; k<SSD.gadj.rows(); k++) {
+            if (SSD.gadj(edge(1), k) == 1) {
+                SSD.gadj(edge(0), k) = 1;
+                SSD.gadj(k, edge(0)) = 1;
             }
         }
-        Adj.row(edge(1)).setZero();
-        Adj.col(edge(1)).setZero();
+        SSD.gadj.row(edge(1)).setZero();
+        SSD.gadj.col(edge(1)).setZero();
+    }
+    
+    // remove redundat edges
+    std::sort(rm_idx.rbegin(), rm_idx.rend()); // Sort in descending order
+    for (int idx : rm_idx) {
+        SSD.gskel_val.erase(SSD.gskel_val.begin() + idx);
     }
 
-    int del_size = rm_idx.size();
-    std::sort(rm_idx.begin(), rm_idx.end());
+    // adjust adjacency matrix
+    std::vector<int> keep_ids; //indicies to keep
+    for (int i=0; i<dim; i++) {
+        if (std::find(rm_idx.begin(), rm_idx.end(), i) == rm_idx.end()) {
+            keep_ids.push_back(i);
+        }
+    }
+    Eigen::MatrixXi reduced(keep_ids.size(), keep_ids.size());
+    for (int i=0; i<(int)keep_ids.size(); i++) {
+        for (int j=0; j<(int)keep_ids.size(); j++) {
+            reduced(i,j) = SSD.gadj(keep_ids[i], keep_ids[j]);
+        }
+    }
+    SSD.gadj = reduced;
 
-    Eigen::MatrixXi del_idxs;
-    Eigen::MatrixXd del_idxs_d;
-    Eigen::MatrixXd temp_skelver;
-    Eigen::MatrixXd temp_adj;
-    Eigen::MatrixXd temp_adj_2;
-    Eigen::MatrixXd fill = Eigen::MatrixXd::Zero(del_size, Adj.cols());
+    // Mean recentering...
+    for (int i=0; i<(int)SSD.gskel_val.size(); i++) {
+        std::vector<int> neighbors;
+        for (int j=0; j<SSD.gadj.cols(); j++) {
+            if (SSD.gadj(i,j) == 1) {
+                neighbors.push_back(j);
+            }
+        }
+        if (!neighbors.empty()) {
+            Eigen::Vector3d avg_pos(0,0,0);
+            for (int nid : neighbors) {
+                avg_pos += SSD.gskel_val[nid].position;
+            }
+            avg_pos /= neighbors.size();
+            SSD.gskel_val[i].position = avg_pos;
+        }
+    }
+}
 
-    del_idxs = Eigen::Map<Eigen::MatrixXi>(rm_idx.data(), del_size, 1);
-    del_idxs_d = del_idxs.cast<double>();
-    temp_skelver = ed_le.rows_del_M(del_idxs_d, SSD.global_vertices); // Delete rows...
+void RosaMain::graph_decomp() {
+    SSD.joint_ids.clear();
+    SSD.end_ids.clear();
 
-    SSD.global_vertices = temp_skelver;
+    for (int i=0; i<(int)SSD.gadj.rows(); i++) {
+        int ones = (SSD.gadj.row(i).array() == 1).count();
+        if (ones > 3) {
+            SSD.joint_ids.push_back(i);
+        }
+        if (ones == 2) {
+            SSD.end_ids.push_back(i);
+        }
+    }
+}
+
+void RosaMain::vertex_merge() {
+    // Merge vertices if... 
+        // Two joints are connected
+        // Two points are too close
+    for (int i=0; i<(int)SSD.gskel_val.size(); i++) {
+        for (int j=i+1; j<(int)SSD.gskel_val.size(); j++) {
+            if (SSD.gadj(i,j) == 1) {
+                // The points are connected
+                if (std::find(SSD.joint_ids.begin(), SSD.joint_ids.end(), i) != SSD.joint_ids.end() &&
+                    std::find(SSD.joint_ids.begin(), SSD.joint_ids.end(), j) != SSD.joint_ids.end()) {
+                        // Both connected points are joints
+                        auto it = std::find(SSD.joint_ids.begin(), SSD.joint_ids.end(), j);
+                        if (it != SSD.joint_ids.end()) SSD.joint_ids.erase(it);
+
+                        int tot_obs = SSD.gskel_val[i].observation_count + SSD.gskel_val[j].observation_count;
+                        Eigen::Vector3d merged_pos = 
+                                (SSD.gskel_val[i].position * SSD.gskel_val[i].observation_count +
+                                 SSD.gskel_val[j].position * SSD.gskel_val[j].observation_count) / tot_obs;
+                        SSD.gskel_val[i].position = merged_pos;
+                        SSD.gskel_val[i].observation_count = tot_obs;
+                        for (int k=0; k<SSD.gadj.rows(); k++) {
+                            if (SSD.gadj(j,k) == 1) SSD.gadj(i,k) = 1;
+                            if (SSD.gadj(k,j) == 1) SSD.gadj(k,i) = 1;
+                        }
+
+                        SSD.gskel_val.erase(SSD.gskel_val.begin() +j);
+                        SSD.gadj.block(j, 0, SSD.gadj.rows()-j-1, SSD.gadj.cols()) = SSD.gadj.block(j+1, 0, SSD.gadj.rows()-j-1, SSD.gadj.cols());
+                        SSD.gadj.block(0, j, SSD.gadj.rows(), SSD.gadj.cols()-j-1) = SSD.gadj.block(0, j+1, SSD.gadj.rows(), SSD.gadj.cols()-j-1);
+                        SSD.gadj.conservativeResize(SSD.gadj.rows()-1, SSD.gadj.cols()-1);
+                        j--;
+                        continue;
+                    }
+                
+                if ((SSD.gskel_val[i].position - SSD.gskel_val[j].position).norm() < kf_dist_th) {
+                    // Points are too close... 
+                    int tot_obs = SSD.gskel_val[i].observation_count + SSD.gskel_val[j].observation_count;
+                    Eigen::Vector3d merged_pos = 
+                            (SSD.gskel_val[i].position * SSD.gskel_val[i].observation_count +
+                                SSD.gskel_val[j].position * SSD.gskel_val[j].observation_count) / tot_obs;
+                    SSD.gskel_val[i].position = merged_pos;
+                    SSD.gskel_val[i].observation_count = tot_obs;
+                    for (int k=0; k<SSD.gadj.rows(); k++) {
+                        if (SSD.gadj(j,k) == 1) SSD.gadj(i,k) = 1;
+                        if (SSD.gadj(k,j) == 1) SSD.gadj(k,i) = 1;
+                    }
+                    SSD.gskel_val.erase(SSD.gskel_val.begin() +j);
+                    SSD.gadj.block(j, 0, SSD.gadj.rows()-j-1, SSD.gadj.cols()) = SSD.gadj.block(j+1, 0, SSD.gadj.rows()-j-1, SSD.gadj.cols());
+                    SSD.gadj.block(0, j, SSD.gadj.rows(), SSD.gadj.cols()-j-1) = SSD.gadj.block(0, j+1, SSD.gadj.rows(), SSD.gadj.cols()-j-1);
+                    SSD.gadj.conservativeResize(SSD.gadj.rows()-1, SSD.gadj.cols()-1);
+                    j--;
+                    continue;
+                }
+
+            }
+        }
+    }
+}
+
+void RosaMain::update_skeleton() {
+    // Add vertices to final cloud...
     SSD.global_skeleton->clear();
-    for (int i=0; i<(int)SSD.global_vertices.rows(); i++) {
-        pcl::PointXYZ pt;
-        pt.x = SSD.global_vertices(i,0);
-        pt.y = SSD.global_vertices(i,1);
-        pt.z = SSD.global_vertices(i,2);
+    pcl::PointXYZ pt;
+    for (int i=0; i<(int)SSD.gskel_val.size(); i++) {
+        pt.x = SSD.gskel_val[i].position[0];
+        pt.y = SSD.gskel_val[i].position[1];
+        pt.z = SSD.gskel_val[i].position[2];
         SSD.global_skeleton->points.push_back(pt);
     }
 }

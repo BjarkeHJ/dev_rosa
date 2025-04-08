@@ -61,7 +61,7 @@ struct SkeletonVertex
 
 class VertexLKF {
 public:
-    VertexLKF(double process_noise = 0.001f, double measurement_noise = 0.1f) {
+    VertexLKF(double process_noise = 0.1f, double measurement_noise = 0.5f) {
         Q = Eigen::Matrix3d::Identity() * process_noise;
         R = Eigen::Matrix3d::Identity() * measurement_noise;
     }
@@ -110,7 +110,11 @@ struct SkeletonDecomposition
     pcl::PointCloud<pcl::PointXYZ>::Ptr global_skeleton;
 
     std::vector<SkeletonVertex> gskel;
+    std::vector<SkeletonVertex> gskel_val;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr ver_cloud;
     Eigen::MatrixXi gadj; // Global skeleton adjacency matrix
+    std::vector<int> joint_ids;
+    std::vector<int> end_ids;
 
     Eigen::MatrixXd global_vertices; // Global skeleton vertices
 
@@ -131,6 +135,10 @@ public:
     SkeletonDecomposition SSD;
     geometry_msgs::msg::TransformStamped transform;
 
+    /* Params */ 
+    double kf_pn;
+    double kf_mn;
+
 private:
     /* Functions */
     void distance_filter();
@@ -142,9 +150,13 @@ private:
     void vertex_sampling();
     void local_lineextract();
     void vertex_recenter();
-    void kf_skeleton_incr();
     void restore_scale();
+    void kf_skeleton_incr();
+    void graph_adj();
+    void vertex_merge();
+    void graph_decomp();
     void update_skeleton();
+
 
     void incremental_graph();
     void global_lineextraction();
@@ -187,8 +199,7 @@ private:
     Eigen::MatrixXd vvar;  //symm vector variance
     pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud;
     Eigen::MatrixXi bad_sample;
-    std::unordered_map<int, int> local_to_global_map;
-    
+        
     /* Utils */
     std::unique_ptr<pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>> global_octree;
 

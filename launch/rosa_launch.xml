@@ -4,8 +4,8 @@
         <param name="num_scans" type="int" value="1"/> <!-- Number of Lidar scans before publishing -->
 
         <!-- ROSA MAIN -->
-        <param name="max_lidar_dist" type="float" value="30"/> <!-- Max distance (radius) for lidar points used for calculations -->
-        <param name="max_pts" type="int" value="300"/> <!-- Max number of points in downsampled cloud -->
+        <param name="max_lidar_dist" type="float" value="25"/> <!-- Max distance (radius) for lidar points used for calculations -->
+        <param name="max_pts" type="int" value="200"/> <!-- Max number of points in downsampled cloud -->
         <param name="min_pts" type="int" value="100"/> <!-- Min number of points in downsampled cloud (For reliable computation) -->
 
         <param name="normal_est_KNN" type="int" value="10"/> <!-- K nearest neighbours for normal estimation -->
@@ -20,9 +20,10 @@
         
         <!-- Global Skeleton Vertex Fusion - After Scale Restoration -->
         <param name="kf_dist_th" type="float" value="3.0"/> <!-- Distance threshold for new vertex increment -->
-        <param name="kf_conf_th" type="float" value="0.2"/> <!-- Confidence threshold for valid vertex -->
+        <param name="kf_conf_th" type="float" value="0.1"/> <!-- Confidence threshold for valid vertex -->
 
-
+        <param name="kf_process_noise" type="float" value="0.0001"/> <!-- Kalman Filter Process Noise -->
+        <param name="kf_meas_noise" type="float" value="0.1"/> <!-- Kalman Filter Measurement Noise -->
 
         <!-- Global Skeleton (not used atm) -->
         <param name="tolerance" type="float" value="5.0"/> <!-- Radius for global skeleton increment - Space between vertices -->

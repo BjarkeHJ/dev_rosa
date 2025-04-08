@@ -114,7 +114,7 @@ void RosaNode::run() {
 
         sensor_msgs::msg::PointCloud2 db_out_2;
         pcl::toROSMsg(*skel_op->debug_cloud_2, db_out_2);
-        db_out_2.header.frame_id = "lidar_frame";
+        db_out_2.header.frame_id = "World";
         db_out_2.header.stamp = this->get_clock()->now();
         debug_pub_2_->publish(db_out_2);
 
