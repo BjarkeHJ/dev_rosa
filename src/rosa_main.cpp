@@ -54,10 +54,12 @@ void RosaMain::init(std::shared_ptr<rclcpp::Node> node) {
 
 void RosaMain::main() {
     auto start = std::chrono::high_resolution_clock::now();
-
     distance_filter();
+
     pcd_size_ = SSD.pts_->points.size();
-    if (!pcd_size_) return; // No points within range...
+    if (pcd_size_ == 0) return; // No points within range...
+
+    std::cout << "Distance to structure: " << closest_point << std::endl;
 
     normalize();
     if (pcd_size_ < nMin) {
@@ -66,39 +68,43 @@ void RosaMain::main() {
     }
 
     mahanalobis_mat(radius_neigh);
+    // std::cout << "1" << std::endl;
     drosa();
+    // std::cout << "2" << std::endl;
     dcrosa();
+    // std::cout << "3" << std::endl;
     vertex_sampling();
+    // std::cout << "4" << std::endl;
     local_lineextract();
+    // std::cout << "5" << std::endl;
     vertex_recenter();
+    // std::cout << "6" << std::endl;
     restore_scale();
+    // std::cout << "7" << std::endl;
     kf_skeleton_incr();
+    // std::cout << "8" << std::endl;
     graph_adj();
+    // std::cout << "9" << std::endl;
     // global_lineextraction();
     graph_decomp();
+    // std::cout << "10" << std::endl;
     vertex_merge();
+    // std::cout << "11" << std::endl;
+    update_skeleton();
 
     // Merge vertices based on areas density (mean) - Thinking skeleton extraction of nacelle and house in general... (???)
     // Do joint handling 
     
-    update_skeleton();
+
+    // Extract current active global vertices
+
 
     std::cout << "Global Skeleton Size: " << SSD.global_skeleton->points.size() << std::endl;
-    std::cout << "Global Adjency Matrix Size: " << SSD.gadj.rows() << " " << SSD.gadj.cols() << std::endl;
-    std::cout << "gskel size" << SSD.gskel_val.size() << std::endl;
     std::cout << "Number of joints: " << SSD.joint_ids.size() << std::endl;
 
     // Generate viewpoints in XY-Plane on either side of the skeleton (three sides if endpoint)
     // When visiting a viewpoint veryfy its validity (???)
     // Mark viewpoints / vertices visited (for vertices 1/2 when one side is visited) (???)
-
-    // for (int i=0; i<(int)SSD.gadj.rows(); i++) {
-    //     for (int j=0; j<(int)SSD.gadj.row(i).size(); j++) {
-    //         std::cout << SSD.gadj(i,j) << " ";
-    //     }
-    //     std::cout << "" << std::endl;
-    // }
-
 
     // SSD.global_skeleton->clear(); // For visualizing only current vertices... (debug)
     // incremental_graph();
@@ -133,19 +139,33 @@ void RosaMain::distance_filter() {
     ptf.setFilterLimits(-pts_dist_lim, pts_dist_lim);
     ptf.filter(*pts_dist_filt);
     pcl::copyPointCloud(*pts_dist_filt, *SSD.pts_);
-    // ptf.filter(*SSD.pts_);
 
+    // Compute the closest distance to the structure...
+    if (pts_dist_filt->points.empty()) return;
+    pcl::KdTreeFLANN<pcl::PointXYZ> cp_tree;
+    cp_tree.setInputCloud(pts_dist_filt);
+    pcl::PointXYZ pt(0.0, 0.0, 0.0);
+    int K = 10;
+    std::vector<int> pt_ids;
+    std::vector<float> pt_dists;
+    if (cp_tree.nearestKSearch(pt, K, pt_ids, pt_dists) > 0) {
+        closest_point = 0.0;
+        for (int i=0; i<(int)pt_dists.size(); i++) {
+            closest_point += std::sqrt(pt_dists[i]);
+        }
+        closest_point /= static_cast<double>(K);
+    }
 }
 
 void RosaMain::normalize() {
     /* Normalization */
     pcl::PointXYZ min, max;
     pcl::getMinMax3D(*SSD.pts_, min, max);
-    double x_scale, y_scale, z_scale;
-    x_scale = max.x - min.x;
-    y_scale = max.y - min.y;
-    z_scale = max.z - min.z;
-    norm_scale = std::max(x_scale, std::max(y_scale, z_scale));
+    // double x_scale, y_scale, z_scale;
+    maxx = max.x - min.x;
+    maxy = max.y - min.y;
+    maxz = max.z - min.z;
+    norm_scale = std::max(maxx, std::max(maxy, maxz));
 
     pcl::compute3DCentroid(*SSD.pts_, centroid);
 
@@ -743,11 +763,21 @@ void RosaMain::vertex_recenter() {
 }
 
 void RosaMain::restore_scale() {
-    SSD.skelver_scaled.resize(SSD.skelver.rows(), SSD.skelver.cols());
+    Eigen::MatrixXd scaled_temp(SSD.skelver.rows(), 3);
     Eigen::RowVector3d centroid3 = centroid.head<3>().transpose();
+    int valid_count = 0;
+    
     for (int i=0; i<(int)SSD.skelver.rows(); i++) {
-        SSD.skelver_scaled.row(i) = SSD.skelver.row(i) * norm_scale + centroid3;
+        Eigen::Vector3d rescl = SSD.skelver.row(i) * norm_scale + centroid3;
+        double dist = rescl.norm();
+        if (dist >= closest_point) {
+            scaled_temp.row(valid_count++) = rescl;
+        }
+        else {
+            std::cout << "Remove vertex due to distance constraint..." << std::endl;
+        }
     }
+    SSD.skelver_scaled = scaled_temp.topRows(valid_count);
 }
 
 void RosaMain::kf_skeleton_incr() {
@@ -756,7 +786,7 @@ void RosaMain::kf_skeleton_incr() {
         transform.transform.rotation.y,
         transform.transform.rotation.z);
         Eigen::Matrix3d R = q.toRotationMatrix();
-
+    
     for (int i=0; i<SSD.skelver_scaled.rows(); i++) {
         Eigen::Vector3d ver = SSD.skelver_scaled.row(i);
         ver = R * ver + Eigen::Vector3d(transform.transform.translation.x,
@@ -798,7 +828,7 @@ void RosaMain::kf_skeleton_incr() {
     }
 
     // If the confidence of a point is not satisfactory within two iteration -- Remove it again
-    if (kf_cnt == 2) {
+    if (kf_cnt == 5) {
         for (int i=0; i<(int)SSD.gskel.size(); ) {
             if (!SSD.gskel[i].confidence_check) {
                 SSD.gskel.erase(SSD.gskel.begin() + i); 
@@ -834,19 +864,41 @@ void RosaMain::graph_adj() {
     int dim = SSD.gskel_val.size();
     SSD.gadj = Eigen::MatrixXi::Zero(dim, dim);
 
-    // Radius search for adjacency 
+    // KNN search for adjacency 
     pcl::KdTreeFLANN<pcl::PointXYZ> adj_tree;
     adj_tree.setInputCloud(SSD.ver_cloud);
 
-    for (int i=0; i<(int)SSD.ver_cloud->points.size(); i++) {
+    for (int i = 0; i < (int)SSD.ver_cloud->points.size(); i++) {
+        int K = 10;
         std::vector<int> indxs;
         std::vector<float> dists;
-        double r = 1.5 * kf_dist_th;
-        if (adj_tree.radiusSearch(SSD.ver_cloud->points[i], r, indxs, dists) > 0) {
-            for (int j : indxs) {
-                // Set adjacency connection
-                SSD.gadj(i,j) = 1;
-                SSD.gadj(j,i) = 1;
+        int n_nb = adj_tree.nearestKSearch(SSD.ver_cloud->points[i], K, indxs, dists); // Number of found neighbors
+        
+        for (int j = 1; j < n_nb; ++j) { // skip SP itself at index 0
+            int nb_i = indxs[j];  // neighbor index
+            float dist_SP_to_NB = std::sqrt(dists[j]);  // distance from SP to neighbor
+            if ( nb_i <= i) continue;
+
+            bool sp_is_closest = true;
+    
+            for (int k = 1; k < n_nb; ++k) {
+                if (k == j) continue;
+    
+                int nb_j = indxs[k];  // another neighbor index
+                // Calculate distance between neighbors (NB(i) and NB(j))
+                float dist_NB_to_NB = (SSD.ver_cloud->points[nb_i].getVector3fMap() - SSD.ver_cloud->points[nb_j].getVector3fMap()).norm();
+    
+                // If the distance from SP to NB(i) is greater than the distance between NB(i) and NB(j), break
+                if (dist_NB_to_NB < dist_SP_to_NB) {
+                    sp_is_closest = false;
+                    break;
+                }
+            }
+    
+            // If SP is closer to NB(i) than to any other neighbor, mark them as adjacent
+            if (sp_is_closest) {
+                SSD.gadj(i, nb_i) = 1;
+                SSD.gadj(nb_i, i) = 1;// Mark bidirectional adjacency
             }
         }
     }
@@ -982,14 +1034,29 @@ void RosaMain::graph_decomp() {
     SSD.end_ids.clear();
 
     for (int i=0; i<(int)SSD.gadj.rows(); i++) {
-        int ones = (SSD.gadj.row(i).array() == 1).count();
-        if (ones > 3) {
-            SSD.joint_ids.push_back(i);
+        int ones = (SSD.gadj.row(i).array() == 1).count(); // Count number of connections
+        if (ones == 1) {
+            // bad vertice (not connected)
+            SSD.bad_ids.push_back(i);
         }
+
         if (ones == 2) {
             SSD.end_ids.push_back(i);
         }
+
+        if (ones > 3) {
+            SSD.joint_ids.push_back(i);
+        }
     }
+
+    // TODO:
+    // Implement a minimum spanning tree (MST) using Kruskals Algorithm 
+
+    // Cosine similarity branch segmentation 
+    // Extract general direction of neighboring vertices (SVD?)
+    // If that direction remains -> solid branch
+    // 
+
 }
 
 void RosaMain::vertex_merge() {
@@ -1000,6 +1067,7 @@ void RosaMain::vertex_merge() {
         for (int j=i+1; j<(int)SSD.gskel_val.size(); j++) {
             if (SSD.gadj(i,j) == 1) {
                 // The points are connected
+
                 if (std::find(SSD.joint_ids.begin(), SSD.joint_ids.end(), i) != SSD.joint_ids.end() &&
                     std::find(SSD.joint_ids.begin(), SSD.joint_ids.end(), j) != SSD.joint_ids.end()) {
                         // Both connected points are joints
@@ -1044,7 +1112,6 @@ void RosaMain::vertex_merge() {
                     j--;
                     continue;
                 }
-
             }
         }
     }
@@ -1061,8 +1128,6 @@ void RosaMain::update_skeleton() {
         SSD.global_skeleton->points.push_back(pt);
     }
 }
-
-
 
 
 

@@ -92,6 +92,7 @@ void RosaNode::set_cloud() {
     
     // Set current pointcloud if not empty
     if (batch_pcd->empty()) return;
+
     skel_op->SSD.pts_->clear();
     pcl::copyPointCloud(*batch_pcd, *skel_op->SSD.pts_);
     batch_pcd->clear();
@@ -105,31 +106,34 @@ void RosaNode::run() {
         skel_op->transform = curr_tf; // Set transform of current points...
         skel_op->main(); // Run main ROSA points algorithm
 
-        // Temp: Debugger publisher - Specify pointcloud quantity to visualize in Rviz2...
-        sensor_msgs::msg::PointCloud2 db_out;
-        pcl::toROSMsg(*skel_op->debug_cloud, db_out);
-        db_out.header.frame_id = "World";
-        db_out.header.stamp = this->get_clock()->now();
-        debug_pub_->publish(db_out);
+        
+        if (!skel_op->SSD.pts_->points.empty()) {
+            // Temp: Debugger publisher - Specify pointcloud quantity to visualize in Rviz2...
+            sensor_msgs::msg::PointCloud2 db_out;
+            pcl::toROSMsg(*skel_op->debug_cloud, db_out);
+            db_out.header.frame_id = "World";
+            db_out.header.stamp = this->get_clock()->now();
+            debug_pub_->publish(db_out);
 
-        sensor_msgs::msg::PointCloud2 db_out_2;
-        pcl::toROSMsg(*skel_op->debug_cloud_2, db_out_2);
-        db_out_2.header.frame_id = "World";
-        db_out_2.header.stamp = this->get_clock()->now();
-        debug_pub_2_->publish(db_out_2);
+            sensor_msgs::msg::PointCloud2 db_out_2;
+            pcl::toROSMsg(*skel_op->debug_cloud_2, db_out_2);
+            db_out_2.header.frame_id = "World";
+            db_out_2.header.stamp = this->get_clock()->now();
+            debug_pub_2_->publish(db_out_2);
 
-        try {
-            geometry_msgs::msg::TransformStamped tf_st = tf_buffer_->lookupTransform("World", "lidar_frame", tf2::TimePointZero);
-            pcl::PointCloud<pcl::PointXYZ>::Ptr tf_pcd(new pcl::PointCloud<pcl::PointXYZ>);
-            pcl_ros::transformPointCloud(*skel_op->pts_dist_filt, *tf_pcd, tf_st);
-            sensor_msgs::msg::PointCloud2 pcd_re;
-            pcl::toROSMsg(*tf_pcd, pcd_re);
-            pcd_re.header.frame_id = "World";
-            pcd_re.header.stamp = this->get_clock()->now();
-            pcd_repub_->publish(pcd_re);
-        }
-        catch (const tf2::TransformException &ex) {
-            RCLCPP_WARN(this->get_logger(), "Could not tranform: %s", ex.what());
+            try {
+                geometry_msgs::msg::TransformStamped tf_st = tf_buffer_->lookupTransform("World", "lidar_frame", tf2::TimePointZero);
+                pcl::PointCloud<pcl::PointXYZ>::Ptr tf_pcd(new pcl::PointCloud<pcl::PointXYZ>);
+                pcl_ros::transformPointCloud(*skel_op->pts_dist_filt, *tf_pcd, tf_st);
+                sensor_msgs::msg::PointCloud2 pcd_re;
+                pcl::toROSMsg(*tf_pcd, pcd_re);
+                pcd_re.header.frame_id = "World";
+                pcd_re.header.stamp = this->get_clock()->now();
+                pcd_repub_->publish(pcd_re);
+            }
+            catch (const tf2::TransformException &ex) {
+                RCLCPP_WARN(this->get_logger(), "Could not tranform: %s", ex.what());
+            }
         }
     }
 }

@@ -115,6 +115,7 @@ struct SkeletonDecomposition
     Eigen::MatrixXi gadj; // Global skeleton adjacency matrix
     std::vector<int> joint_ids;
     std::vector<int> end_ids;
+    std::vector<int> bad_ids;
 
     Eigen::MatrixXd global_vertices; // Global skeleton vertices
 
@@ -192,6 +193,8 @@ private:
     
     /* Data */
     int pcd_size_;
+    double closest_point;
+    double maxx, maxy, maxz;
     double norm_scale;
     Eigen::Vector4d centroid;
     Eigen::MatrixXd pset; //point set
@@ -199,7 +202,7 @@ private:
     Eigen::MatrixXd vvar;  //symm vector variance
     pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud;
     Eigen::MatrixXi bad_sample;
-        
+    
     /* Utils */
     std::unique_ptr<pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>> global_octree;
 
