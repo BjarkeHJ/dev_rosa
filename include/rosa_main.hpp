@@ -89,6 +89,41 @@ private:
 };
 
 
+struct Edge
+{
+    int u, v; // Vertex indices of the edge
+    double w; // Lenght / weight of the edge
+    bool operator<(const Edge &other) const {
+        return w < other.w;
+    } // comparison of the weight of this edge with another
+};
+
+struct UnionFind {
+    std::vector<int> parent;  // parent[i] tells you who the parent of node i is
+
+    // Constructor: initially, every node is its own parent (disconnected)
+    UnionFind(int n) : parent(n) {
+        for (int i = 0; i < n; ++i) parent[i] = i;
+    }
+
+    // Find the "representative" of the component that x belongs to
+    int find(int x) {
+        // If x is not its own parent, follow the chain recursively
+        if (parent[x] != x)
+            parent[x] = find(parent[x]);  // Path compression for speed
+        return parent[x];
+    }
+
+    // Try to merge the sets that x and y belong to
+    bool unite(int x, int y) {
+        int rx = find(x);  // root of x
+        int ry = find(y);  // root of y
+        if (rx == ry) return false;  // Already in the same set — adding this edge would create a cycle
+        parent[ry] = rx;  // Union: make one root the parent of the other
+        return true;
+    }
+};
+
 struct SkeletonDecomposition 
 {
     pcl::PointCloud<pcl::PointXYZ>::Ptr pts_;
@@ -154,12 +189,13 @@ private:
     void restore_scale();
     void kf_skeleton_incr();
     void graph_adj();
-    void vertex_merge();
-    void graph_decomp();
+    void mst();
+    void prune_branches();
     void update_skeleton();
 
-
-    void incremental_graph();
+    
+    void vertex_merge();
+    void graph_decomp();
     void global_lineextraction();
 
     void rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals);
@@ -170,7 +206,11 @@ private:
     Eigen::Vector3d symmnormal_smooth(Eigen::MatrixXd& V, Eigen::MatrixXd& w);
     Eigen::Vector3d closest_projection_point(Eigen::MatrixXd& P, Eigen::MatrixXd& V);
     int argmax_eigen(Eigen::MatrixXd &x);
-    
+    void extract_seg_dfs(int current, int parent, std::vector<int> &visited, std::vector<int> &seg);
+    Eigen::Vector3d est_local_dir(int idx);
+    std::vector<int> dfs_branch_collect(int start, int parent);
+
+
     /* Params */
     double pts_dist_lim; // For lidar point distance filtering
     int ne_KNN; // K normal estimation neighbours
@@ -203,6 +243,8 @@ private:
     pcl::PointCloud<pcl::PointXYZ>::Ptr pset_cloud;
     Eigen::MatrixXi bad_sample;
     
+    int new_vers; // Used for MST updates...
+
     /* Utils */
     std::unique_ptr<pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>> global_octree;
 

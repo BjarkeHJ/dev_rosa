@@ -84,11 +84,24 @@ void RosaMain::main() {
     kf_skeleton_incr();
     // std::cout << "8" << std::endl;
     graph_adj();
+
+    mst(); 
+    prune_branches();
+
+    // TODO: 
+    // Properly segment branches based on directional similarity
+    // Store branches in std::map<int, Eigen::MatrixXd> 
+    // For each branch compute the main direction (PCA)
+    // Recenter points in each branch by projecting points onto the direction as:
+        // proj = centroid + main_dir * (point - centroid).dot(main_dir)
+
+
+
     // std::cout << "9" << std::endl;
     // global_lineextraction();
-    graph_decomp();
+    // graph_decomp();
     // std::cout << "10" << std::endl;
-    vertex_merge();
+    // vertex_merge();
     // std::cout << "11" << std::endl;
     update_skeleton();
 
@@ -100,6 +113,7 @@ void RosaMain::main() {
 
 
     std::cout << "Global Skeleton Size: " << SSD.global_skeleton->points.size() << std::endl;
+    std::cout << "Global Adjacency Matrix Size: " << SSD.gadj.rows() << std::endl;
     std::cout << "Number of joints: " << SSD.joint_ids.size() << std::endl;
 
     // Generate viewpoints in XY-Plane on either side of the skeleton (three sides if endpoint)
@@ -844,9 +858,10 @@ void RosaMain::kf_skeleton_incr() {
 }
 
 void RosaMain::graph_adj() {
-    // Create global skeleton adjacency matrix
+    // Create global skeleton adjacency matrix from points that pass the confidence check
     SSD.gskel_val.clear();
     SSD.ver_cloud->clear();
+    int pre_size = SSD.gskel_val.size();
 
     pcl::PointXYZ pt;
     for (auto &gver : SSD.gskel) {
@@ -858,6 +873,8 @@ void RosaMain::graph_adj() {
             SSD.gskel_val.push_back(gver);
         }
     }
+
+    new_vers = SSD.gskel_val.size() - pre_size; // Number of new vertices this iteration (used for mst update)
 
     if (SSD.ver_cloud->points.empty()) return;
 
@@ -903,6 +920,108 @@ void RosaMain::graph_adj() {
         }
     }
 }
+
+void RosaMain::mst() {
+    int N_ver = SSD.gskel_val.size();
+    if (N_ver == 0 || new_vers == 0) return; // No vertices in the skeleton yet or no new vertices to add
+
+    // Step 1: Construct the edge list for the existing skeleton
+    // This part takes all the existing edges and stores them with their corresponding distances as weights
+    // Only edges that are already connected in the adjacency matrix (SSD.gadj) are considered
+    std::vector<Edge> mst_edges;
+    for (int i = 0; i < N_ver - new_vers; ++i) {
+        for (int j = i + 1; j < N_ver - new_vers; ++j) {
+            if (SSD.gadj(i, j) == 1) {
+                // Compute the weight of the edge as the Euclidean distance between vertices i and j
+                double weight = (SSD.gskel_val[i].position - SSD.gskel_val[j].position).norm();
+                // Store the edge and its weight
+                mst_edges.push_back({i, j, weight});
+            }
+        }
+    }
+
+    // Step 2: Add edges for newly added vertices
+    // These new edges are candidate edges that connect new vertices to the existing ones
+    double angle_F = 5.0; // Scale factor for weighting linear directions in MST
+    int start_idx = SSD.gskel_val.size() - new_vers; // The index of the first newly added vertex
+    for (int i = start_idx; i < N_ver; ++i) {
+        for (int j = 0; j < N_ver; ++j) {
+            if (i != j) {
+                // Compute the distance between the new vertex i and every other vertex
+                Eigen::Vector3d vec_ij = (SSD.gskel_val[i].position - SSD.gskel_val[j].position);
+                double dist = vec_ij.norm();
+                
+                // Compute the local direction between the new vertex i and every other vertex
+                Eigen::Vector3d dir_j = est_local_dir(j);
+                double angle_pen = 0.0;
+
+                if (dir_j.norm() > 1e-6) {
+                    Eigen::Vector3d move_dir = vec_ij.normalized();
+                    angle_pen = 1.0 - dir_j.dot(move_dir); // dot product is cos(theta)
+                }
+
+                double weight = dist * (1.0 + angle_F * angle_pen);
+
+                // Store the new edge between vertex i and vertex j with its directionally aware weight metric...
+                mst_edges.push_back({i, j, weight});
+            }
+        }
+    }
+
+    // Step 3: Apply Kruskal’s algorithm to form the MST
+    // Sort all edges by their weight
+    std::sort(mst_edges.begin(), mst_edges.end());
+
+    // Initialize the Union-Find (Disjoint Set Union) data structure
+    UnionFind uf(N_ver); // Initially, each vertex is its own parent, representing a disjoint set
+
+    // Reset the adjacency matrix to zero (no edges initially)
+    SSD.gadj.setZero(); 
+
+    // Step 4: Process edges in ascending order of their weight
+    // If two vertices belong to different sets (i.e., adding the edge won't form a cycle),
+    // then unite them and add the edge to the MST
+    for (const auto &edge : mst_edges) {
+        // If the vertices u and v are in different sets, unite them and add the edge
+        if (uf.unite(edge.u, edge.v)) {
+            // Mark this edge as part of the MST in the adjacency matrix (bidirectional connection)
+            SSD.gadj(edge.u, edge.v) = 1;
+            SSD.gadj(edge.v, edge.u) = 1;
+        }
+    }
+}
+
+void RosaMain::prune_branches() {
+    int min_branch_size = 10;
+    int N_ver = SSD.gadj.rows();
+    std::vector<int> visited(N_ver, false);
+    
+    for (int i=0; i<N_ver; ++i) {
+        int degree = SSD.gadj.row(i).sum();
+        if (degree <= 1) continue; // No neighbors
+        
+        for (int j=0; j<N_ver; ++j) {
+            if (SSD.gadj(i,j) == 1 && !visited[j]) {
+                std::vector<int> branch = dfs_branch_collect(j,i);
+
+                for (int b : branch) visited[b] = true;
+
+                // Remove connections for small branches...
+                if ((int)branch.size() < min_branch_size) {
+                    for (int b : branch) {
+                        for (int k=0; k<N_ver; ++k) {
+                            SSD.gadj(b,k) = 0;
+                            SSD.gadj(k,b) = 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+
 
 /* *** LINE EXTRACTION NOT USED *** */
 void RosaMain::global_lineextraction() {
@@ -1122,10 +1241,12 @@ void RosaMain::update_skeleton() {
     SSD.global_skeleton->clear();
     pcl::PointXYZ pt;
     for (int i=0; i<(int)SSD.gskel_val.size(); i++) {
-        pt.x = SSD.gskel_val[i].position[0];
-        pt.y = SSD.gskel_val[i].position[1];
-        pt.z = SSD.gskel_val[i].position[2];
-        SSD.global_skeleton->points.push_back(pt);
+        if (SSD.gadj.row(i).sum() > 0) {
+            pt.x = SSD.gskel_val[i].position[0];
+            pt.y = SSD.gskel_val[i].position[1];
+            pt.z = SSD.gskel_val[i].position[2];
+            SSD.global_skeleton->points.push_back(pt);
+        }
     }
 }
 
@@ -1380,6 +1501,54 @@ int RosaMain::argmax_eigen(Eigen::MatrixXd &x) {
     return idx;
 }
 
+void RosaMain::extract_seg_dfs(int current, int parent, std::vector<int> &visited, std::vector<int> &seg) {
+    visited[current] = true; // Mark the current as visited
+    seg.push_back(current); // append the current to the segment
 
+    for (int k=0; k<SSD.gadj.cols(); ++k) {
+        // if current is connected, not the parent, and not visited...
+        if (SSD.gadj(current, k) == 1 && k != parent && !visited[k]) {
+            extract_seg_dfs(k, current, visited, seg); // Recursion...
+        }
+    }
+}
 
+Eigen::Vector3d RosaMain::est_local_dir(int idx) {
+    Eigen::Vector3d dir = Eigen::Vector3d::Zero();
+    int count = 0;
 
+    for (int k=0; k<(int)SSD.gskel_val.size(); ++k) {
+        if (SSD.gadj(idx, k) == 1) {
+            Eigen::Vector3d diff = SSD.gskel_val[k].position - SSD.gskel_val[idx].position;
+            if (diff.norm() > 1e-6) {
+                dir += diff.normalized();
+                ++count;
+            }
+        }
+    }
+    if (count > 0) return dir.normalized();
+    else return Eigen::Vector3d::Zero();
+}
+
+std::vector<int> RosaMain::dfs_branch_collect(int start, int parent) {
+    std::vector<int> stack = {start};
+    std::vector<int> branch_nodes;
+    std::unordered_set<int> visited_local;
+
+    while (!stack.empty()) {
+        int curr = stack.back();
+        stack.pop_back();
+
+        if (visited_local.count(curr)) continue; // If current is already in visited_local
+        visited_local.insert(curr);
+        branch_nodes.push_back(curr);
+
+        for (int i = 0; i < SSD.gadj.rows(); ++i) {
+            if (SSD.gadj(curr, i) == 1 && i != parent && !visited_local.count(i)) {
+                stack.push_back(i);
+            }
+        }
+    }
+
+    return branch_nodes;
+}
