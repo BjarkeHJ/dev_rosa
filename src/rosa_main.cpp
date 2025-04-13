@@ -85,9 +85,19 @@ void RosaMain::main() {
     // std::cout << "8" << std::endl;
     graph_adj();
 
-    mst(); 
-    prune_branches();
+    mst();
 
+
+
+    // prune_branches();
+    
+    // for (int i=0; i<(int)SSD.gadj.rows(); ++i) {
+    //     for (int j=0; j<(int)SSD.gadj.cols(); ++j) {
+    //         std::cout << SSD.gadj(i,j) << " ";
+    //     }
+    //     std::cout << "" << std::endl;
+    // }
+    
     // TODO: 
     // Properly segment branches based on directional similarity
     // Store branches in std::map<int, Eigen::MatrixXd> 
@@ -120,20 +130,20 @@ void RosaMain::main() {
     // When visiting a viewpoint veryfy its validity (???)
     // Mark viewpoints / vertices visited (for vertices 1/2 when one side is visited) (???)
 
-    // SSD.global_skeleton->clear(); // For visualizing only current vertices... (debug)
     // incremental_graph();
     // global_lineextraction();
 
-    debug_cloud = SSD.global_skeleton;
+    // debug_cloud = SSD.global_skeleton;
 
-    debug_cloud_2->clear();
-    for (const auto &id : SSD.joint_ids) {
-        pcl::PointXYZ ptt;
-        ptt.x = SSD.gskel_val[id].position(0);
-        ptt.y = SSD.gskel_val[id].position(1);
-        ptt.z = SSD.gskel_val[id].position(2);
-        debug_cloud_2->points.push_back(ptt);
+    debug_cloud->points.clear();
+    for (int i=0; i<(int)SSD.skelver_scaled.rows(); ++i) {
+        pcl::PointXYZ pt;
+        pt.x = SSD.skelver_scaled(i,0);
+        pt.y = SSD.skelver_scaled(i,1);
+        pt.z = SSD.skelver_scaled(i,2);
+        debug_cloud->points.push_back(pt);
     }
+
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end - start;
@@ -517,6 +527,7 @@ void RosaMain::dcrosa() {
 void RosaMain::vertex_sampling() {
     Extra_Del ed_vs;
     int outlier = 2;
+
     bad_sample = Eigen::MatrixXi::Zero(pcd_size_, 1);
     pcl::PointXYZ pset_pt;
     pset_cloud->clear();
@@ -735,7 +746,8 @@ void RosaMain::vertex_recenter() {
             }
         }
 
-        if (idxs.size() < 3) {
+        if (idxs.size() < 10) {
+            // Bad vertice - Not enough points "agree" with it
             deleted_vertices_idx.push_back(i);
         }
 
@@ -763,28 +775,30 @@ void RosaMain::vertex_recenter() {
         del_idxs = Eigen::Map<Eigen::MatrixXi>(deleted_vertices_idx.data(), del_size, 1);
         del_idxs_d = del_idxs.cast<double>();
         SSD.skelver = ed_rr.rows_del_M(del_idxs_d, SSD.skelver); // Delete rows...
-        
-        // resize adj matrix
-        // Eigen::MatrixXd fill = Eigen::MatrixXd::Zero(del_size, SSD.Adj.cols());
-        // Eigen::MatrixXd temp_skeladj_d = SSD.Adj.cast<double>();
-        // Eigen::MatrixXd temp_skeladj_d_2;
-        // temp_skeladj_d = ed_rr.rows_del_M(del_idxs_d, temp_skeladj_d);
-        // temp_skeladj_d_2.resize(SSD.Adj.cols(), SSD.Adj.cols());
-        // temp_skeladj_d_2 << temp_skeladj_d, fill;
-        // temp_skeladj_d_2 = ed_rr.cols_del_M(del_idxs_d, temp_skeladj_d_2);
-        // SSD.Adj = temp_skeladj_d_2.block(0, 0, temp_skeladj_d_2.cols(), temp_skeladj_d_2.cols()).cast<int>();
     }
 }
 
 void RosaMain::restore_scale() {
+    /* Restore scale and apply trasnform to global frame */
+
     Eigen::MatrixXd scaled_temp(SSD.skelver.rows(), 3);
     Eigen::RowVector3d centroid3 = centroid.head<3>().transpose();
     int valid_count = 0;
-    
-    for (int i=0; i<(int)SSD.skelver.rows(); i++) {
+
+    Eigen::Quaterniond q(transform.transform.rotation.w,
+                         transform.transform.rotation.x,
+                         transform.transform.rotation.y,
+                         transform.transform.rotation.z);
+    Eigen::Matrix3d R = q.toRotationMatrix();
+    Eigen::Vector3d t(transform.transform.translation.x,
+                      transform.transform.translation.y,
+                      transform.transform.translation.z);
+        
+    for (int i=0; i<(int)SSD.skelver.rows(); ++i) {
         Eigen::Vector3d rescl = SSD.skelver.row(i) * norm_scale + centroid3;
         double dist = rescl.norm();
         if (dist >= closest_point) {
+            rescl = R * rescl + t;
             scaled_temp.row(valid_count++) = rescl;
         }
         else {
@@ -795,18 +809,8 @@ void RosaMain::restore_scale() {
 }
 
 void RosaMain::kf_skeleton_incr() {
-    Eigen::Quaterniond q(transform.transform.rotation.w,
-        transform.transform.rotation.x,
-        transform.transform.rotation.y,
-        transform.transform.rotation.z);
-        Eigen::Matrix3d R = q.toRotationMatrix();
-    
     for (int i=0; i<SSD.skelver_scaled.rows(); i++) {
         Eigen::Vector3d ver = SSD.skelver_scaled.row(i);
-        ver = R * ver + Eigen::Vector3d(transform.transform.translation.x,
-                                        transform.transform.translation.y,
-                                        transform.transform.translation.z);
-
         bool matched = false;
 
         for (auto &gver : SSD.gskel) {
@@ -842,7 +846,7 @@ void RosaMain::kf_skeleton_incr() {
     }
 
     // If the confidence of a point is not satisfactory within two iteration -- Remove it again
-    if (kf_cnt == 5) {
+    if (kf_cnt == 2) {
         for (int i=0; i<(int)SSD.gskel.size(); ) {
             if (!SSD.gskel[i].confidence_check) {
                 SSD.gskel.erase(SSD.gskel.begin() + i); 
@@ -885,28 +889,30 @@ void RosaMain::graph_adj() {
     pcl::KdTreeFLANN<pcl::PointXYZ> adj_tree;
     adj_tree.setInputCloud(SSD.ver_cloud);
 
+    int K = 5;
     for (int i = 0; i < (int)SSD.ver_cloud->points.size(); i++) {
-        int K = 10;
         std::vector<int> indxs;
         std::vector<float> dists;
         int n_nb = adj_tree.nearestKSearch(SSD.ver_cloud->points[i], K, indxs, dists); // Number of found neighbors
         
         for (int j = 1; j < n_nb; ++j) { // skip SP itself at index 0
-            int nb_i = indxs[j];  // neighbor index
-            float dist_SP_to_NB = std::sqrt(dists[j]);  // distance from SP to neighbor
-            if ( nb_i <= i) continue;
+            int nb_j = indxs[j];  // neighbor index            
+            float dist_SP_to_NB = (SSD.ver_cloud->points[i].getVector3fMap() - SSD.ver_cloud->points[nb_j].getVector3fMap()).norm();  // distance from SP to neighbor
 
             bool sp_is_closest = true;
     
             for (int k = 1; k < n_nb; ++k) {
                 if (k == j) continue;
     
-                int nb_j = indxs[k];  // another neighbor index
-                // Calculate distance between neighbors (NB(i) and NB(j))
-                float dist_NB_to_NB = (SSD.ver_cloud->points[nb_i].getVector3fMap() - SSD.ver_cloud->points[nb_j].getVector3fMap()).norm();
-    
-                // If the distance from SP to NB(i) is greater than the distance between NB(i) and NB(j), break
-                if (dist_NB_to_NB < dist_SP_to_NB) {
+                int nb_k = indxs[k];  // another neighbor index
+                // Calculate distance between neighbors (NB(j) and NB(k))
+                float dist_NB_to_NB = (SSD.ver_cloud->points[nb_j].getVector3fMap() - SSD.ver_cloud->points[nb_k].getVector3fMap()).norm();
+                float dist_SP_to_NB2 = (SSD.ver_cloud->points[i].getVector3fMap() - SSD.ver_cloud->points[nb_k].getVector3fMap()).norm();
+
+                // If the distance from SP to NB(j) is greater than the distance between NB(j) and NB(k), 
+                // AND the distance from SP to NB(k) is smaller than to NB(j)
+                // break -> NB(i) is not a valid nb to SP...
+                if (dist_NB_to_NB < dist_SP_to_NB && dist_SP_to_NB > dist_SP_to_NB2) {
                     sp_is_closest = false;
                     break;
                 }
@@ -914,8 +920,8 @@ void RosaMain::graph_adj() {
     
             // If SP is closer to NB(i) than to any other neighbor, mark them as adjacent
             if (sp_is_closest) {
-                SSD.gadj(i, nb_i) = 1;
-                SSD.gadj(nb_i, i) = 1;// Mark bidirectional adjacency
+                SSD.gadj(i, nb_j) = 1;
+                SSD.gadj(nb_j, i) = 1;// Mark bidirectional adjacency
             }
         }
     }
@@ -927,10 +933,12 @@ void RosaMain::mst() {
 
     // Step 1: Construct the edge list for the existing skeleton
     // This part takes all the existing edges and stores them with their corresponding distances as weights
-    // Only edges that are already connected in the adjacency matrix (SSD.gadj) are considered
+    // Only edges that are already connected in the adjacency matrix (SSD.gadj) are considered (prev iteration...)
     std::vector<Edge> mst_edges;
-    for (int i = 0; i < N_ver - new_vers; ++i) {
-        for (int j = i + 1; j < N_ver - new_vers; ++j) {
+    // for (int i = 0; i < N_ver - new_vers; ++i) {
+    for (int i = 0; i < N_ver; ++i) {
+        // for (int j = i + 1; j < N_ver - new_vers; ++j) {
+        for (int j = i + 1; j < N_ver; ++j) {
             if (SSD.gadj(i, j) == 1) {
                 // Compute the weight of the edge as the Euclidean distance between vertices i and j
                 double weight = (SSD.gskel_val[i].position - SSD.gskel_val[j].position).norm();
@@ -940,35 +948,7 @@ void RosaMain::mst() {
         }
     }
 
-    // Step 2: Add edges for newly added vertices
-    // These new edges are candidate edges that connect new vertices to the existing ones
-    double angle_F = 5.0; // Scale factor for weighting linear directions in MST
-    int start_idx = SSD.gskel_val.size() - new_vers; // The index of the first newly added vertex
-    for (int i = start_idx; i < N_ver; ++i) {
-        for (int j = 0; j < N_ver; ++j) {
-            if (i != j) {
-                // Compute the distance between the new vertex i and every other vertex
-                Eigen::Vector3d vec_ij = (SSD.gskel_val[i].position - SSD.gskel_val[j].position);
-                double dist = vec_ij.norm();
-                
-                // Compute the local direction between the new vertex i and every other vertex
-                Eigen::Vector3d dir_j = est_local_dir(j);
-                double angle_pen = 0.0;
-
-                if (dir_j.norm() > 1e-6) {
-                    Eigen::Vector3d move_dir = vec_ij.normalized();
-                    angle_pen = 1.0 - dir_j.dot(move_dir); // dot product is cos(theta)
-                }
-
-                double weight = dist * (1.0 + angle_F * angle_pen);
-
-                // Store the new edge between vertex i and vertex j with its directionally aware weight metric...
-                mst_edges.push_back({i, j, weight});
-            }
-        }
-    }
-
-    // Step 3: Apply Kruskal’s algorithm to form the MST
+    // Step 2: Apply Kruskal’s algorithm to form the MST
     // Sort all edges by their weight
     std::sort(mst_edges.begin(), mst_edges.end());
 
@@ -978,7 +958,7 @@ void RosaMain::mst() {
     // Reset the adjacency matrix to zero (no edges initially)
     SSD.gadj.setZero(); 
 
-    // Step 4: Process edges in ascending order of their weight
+    // Step 3: Process edges in ascending order of their weight
     // If two vertices belong to different sets (i.e., adding the edge won't form a cycle),
     // then unite them and add the edge to the MST
     for (const auto &edge : mst_edges) {
@@ -998,7 +978,7 @@ void RosaMain::prune_branches() {
     
     for (int i=0; i<N_ver; ++i) {
         int degree = SSD.gadj.row(i).sum();
-        if (degree <= 1) continue; // No neighbors
+        if (degree == 0) continue; // No neighbors
         
         for (int j=0; j<N_ver; ++j) {
             if (SSD.gadj(i,j) == 1 && !visited[j]) {
@@ -1241,12 +1221,12 @@ void RosaMain::update_skeleton() {
     SSD.global_skeleton->clear();
     pcl::PointXYZ pt;
     for (int i=0; i<(int)SSD.gskel_val.size(); i++) {
-        if (SSD.gadj.row(i).sum() > 0) {
+        // if (SSD.gadj.row(i).sum() > 0) {
             pt.x = SSD.gskel_val[i].position[0];
             pt.y = SSD.gskel_val[i].position[1];
             pt.z = SSD.gskel_val[i].position[2];
             SSD.global_skeleton->points.push_back(pt);
-        }
+        // }
     }
 }
 
@@ -1511,23 +1491,6 @@ void RosaMain::extract_seg_dfs(int current, int parent, std::vector<int> &visite
             extract_seg_dfs(k, current, visited, seg); // Recursion...
         }
     }
-}
-
-Eigen::Vector3d RosaMain::est_local_dir(int idx) {
-    Eigen::Vector3d dir = Eigen::Vector3d::Zero();
-    int count = 0;
-
-    for (int k=0; k<(int)SSD.gskel_val.size(); ++k) {
-        if (SSD.gadj(idx, k) == 1) {
-            Eigen::Vector3d diff = SSD.gskel_val[k].position - SSD.gskel_val[idx].position;
-            if (diff.norm() > 1e-6) {
-                dir += diff.normalized();
-                ++count;
-            }
-        }
-    }
-    if (count > 0) return dir.normalized();
-    else return Eigen::Vector3d::Zero();
 }
 
 std::vector<int> RosaMain::dfs_branch_collect(int start, int parent) {

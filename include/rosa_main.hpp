@@ -137,8 +137,8 @@ struct SkeletonDecomposition
     std::vector<std::vector<int>> neighs_surf;
 
     Eigen::MatrixXd skelver; // Current skeleton vertices
-    Eigen::MatrixXd skelver_scaled;
-    Eigen::MatrixXd corresp;
+    Eigen::MatrixXd skelver_scaled; // Rescale and transformed vertices 
+    Eigen::MatrixXd corresp; // Local correspondency matrix...
     Eigen::MatrixXi Adj;
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr rosa_pts; // Rosa pts for global skeleton increment 
@@ -207,7 +207,6 @@ private:
     Eigen::Vector3d closest_projection_point(Eigen::MatrixXd& P, Eigen::MatrixXd& V);
     int argmax_eigen(Eigen::MatrixXd &x);
     void extract_seg_dfs(int current, int parent, std::vector<int> &visited, std::vector<int> &seg);
-    Eigen::Vector3d est_local_dir(int idx);
     std::vector<int> dfs_branch_collect(int start, int parent);
 
 

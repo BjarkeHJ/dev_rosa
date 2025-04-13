@@ -21,6 +21,7 @@ public:
     
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_pub_2_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr adj_pub_;
     
 private:
     /* Params */
@@ -57,6 +58,7 @@ void RosaNode::init() {
     
     debug_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/debugger", 10);
     debug_pub_2_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/debugger_2", 10);
+    adj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/adj_lines", 10);
 }
 
 void RosaNode::init_modules() {
@@ -115,11 +117,41 @@ void RosaNode::run() {
             db_out.header.stamp = this->get_clock()->now();
             debug_pub_->publish(db_out);
 
-            sensor_msgs::msg::PointCloud2 db_out_2;
-            pcl::toROSMsg(*skel_op->debug_cloud_2, db_out_2);
-            db_out_2.header.frame_id = "World";
-            db_out_2.header.stamp = this->get_clock()->now();
-            debug_pub_2_->publish(db_out_2);
+            // sensor_msgs::msg::PointCloud2 db_out_2;
+            // pcl::toROSMsg(*skel_op->debug_cloud_2, db_out_2);
+            // db_out_2.header.frame_id = "World";
+            // db_out_2.header.stamp = this->get_clock()->now();
+            // debug_pub_2_->publish(db_out_2);
+
+
+            visualization_msgs::msg::Marker lines;
+            lines.header.frame_id = "World";
+            lines.header.stamp = this->get_clock()->now();
+            lines.type = visualization_msgs::msg::Marker::LINE_LIST;
+            lines.action = visualization_msgs::msg::Marker::ADD;
+            lines.pose.orientation.w = 1.0;
+            lines.scale.x = 0.05;
+            lines.color.r = 0.2;
+            lines.color.g = 0.8;
+            lines.color.b = 0.4;
+            lines.color.a = 1.0;
+
+            geometry_msgs::msg::Point p1, p2;
+            for (int i=0; i<skel_op->SSD.gadj.rows(); ++i) {
+                for (int j=i+1; j<skel_op->SSD.gadj.rows(); j++) {
+                    if (skel_op->SSD.gadj(i,j) == 1) {
+                        p1.x = skel_op->SSD.gskel_val[i].position[0];
+                        p1.y = skel_op->SSD.gskel_val[i].position[1];
+                        p1.z = skel_op->SSD.gskel_val[i].position[2];
+                        p2.x = skel_op->SSD.gskel_val[j].position[0];
+                        p2.y = skel_op->SSD.gskel_val[j].position[1];
+                        p2.z = skel_op->SSD.gskel_val[j].position[2];
+                        lines.points.push_back(p1);
+                        lines.points.push_back(p2);
+                    }
+                }
+            }
+            adj_pub_->publish(lines);
 
             try {
                 geometry_msgs::msg::TransformStamped tf_st = tf_buffer_->lookupTransform("World", "lidar_frame", tf2::TimePointZero);
