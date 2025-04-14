@@ -281,16 +281,18 @@ void RosaMain::mahanalobis_mat(double &radius_r) {
             w2 = pt_mahalanobis_metric(p2, v2, p1, v1, radius_r);
             w = std::min(w1, w2);
 
+            // Exclude all bad and close-to bad nbs...
             if (w > th_mah) {
                 temp_neighs.push_back(indxs[j]);
             }
         }
+        // Normal aware neighbors
         SSD.neighs[i] = temp_neighs;
     }
 }
 
 double RosaMain::pt_mahalanobis_metric(pcl::PointXYZ &p1, pcl::Normal &v1, pcl::PointXYZ &p2, pcl::Normal &v2, double &range_r) {
-    double Fs = 2.0;
+    double Fs = 5.0;
     double k = 0.0;
     double dist, vec_dot, w;
     Eigen::Vector3d p1_, p2_, v1_, v2_;
@@ -300,6 +302,10 @@ double RosaMain::pt_mahalanobis_metric(pcl::PointXYZ &p1, pcl::Normal &v1, pcl::
     v1_ << v1.normal_x, v1.normal_y, v1.normal_z;
     v2_ << v2.normal_x, v2.normal_y, v2.normal_z;
 
+    // the displacement vector + the projection of the displacement vector onto the search point normal vector
+    // If the displacement vector is perpendicular with the normal vector (projection = 0) the two points both lie in the plane given by the normal vector
+    // If that is the case, the contribution to the distance metric is not increased
+    // Else the metric is increased... 
     dist = (p1_ - p2_ + Fs*((p1_ - p2_).dot(v1_))*v1_).norm();
     dist = dist/range_r;
 
@@ -307,7 +313,9 @@ double RosaMain::pt_mahalanobis_metric(pcl::PointXYZ &p1, pcl::Normal &v1, pcl::
         k = 2*pow(dist, 3) - 3*pow(dist, 2) + 1;
     }
 
+    // Projection of v1 onto v2
     vec_dot = v1_.dot(v2_);
+    // max(0, vec_dot) to not include antiparallel normal vectors
     w = k*pow(std::max(0.0, vec_dot), 2);
     return w;
 }
@@ -357,6 +365,7 @@ void RosaMain::drosa() {
                 vvar(pidx, 0) = 0.0;
             }
         }
+
         vset = vnew; // Overwrite previous plane normal estimates with the updated (for iterative convergence)
 
         Eigen::MatrixXd offset(vvar.rows(), vvar.cols());
@@ -400,6 +409,8 @@ void RosaMain::drosa() {
         indxs_p = compute_active_samples(pIdx, var_p_p, var_v_p); // Extract active samples
 
         /* Update neighbours to be from the same plane slice */
+        // OBS: SSD.neighs_new not used!!
+
         std::vector<int> temp_neigh;
         for (int p=0; p<(int)indxs_p.rows(); p++) {
             temp_neigh.push_back(indxs_p(p,0));
@@ -461,9 +472,10 @@ void RosaMain::dcrosa() {
     for (int n=0; n<dcrosa_iter; n++) {
         for (int i=0; i<pcd_size_; i++) {
             if (SSD.neighs[i].size() > 0) {
+                // Adjust position according to the mahalanobis neighbors
                 int_indxs = Eigen::Map<Eigen::MatrixXi>(SSD.neighs[i].data(), SSD.neighs[i].size(), 1);
                 indxs = int_indxs.cast<double>();
-                extract_neighs = ed_dc.rows_ext_M(indxs, pset); // Extract the neighbouring ROSA points positions
+                extract_neighs = ed_dc.rows_ext_M(indxs, pset); // Extract the neighbouring ROSA points positions (mahalanobis)
                 newpset.row(i) = extract_neighs.colwise().mean(); // Sets each ROSA Point (position) as the mean of the neighbouring points.
             }
             else {
@@ -492,7 +504,7 @@ void RosaMain::dcrosa() {
         // Confidence calc
         Eigen::VectorXd conf = Eigen::VectorXd::Zero(pset.rows()); // zero initialized confidence vector
         newpset = pset; 
-        double CONFIDENCE_TH = 0.1; // Originally 0.5
+        double CONFIDENCE_TH = 0.5; // Originally 0.5
 
         for (int i=0; i<pcd_size_; i++) {
             std::vector<int> pt_idx(k_KNN);
@@ -512,12 +524,11 @@ void RosaMain::dcrosa() {
             // the neighbours are highly linear in nature: i.e. skeletonized.
             Eigen::BDCSVD<Eigen::MatrixXd> svd(neighbours, Eigen::ComputeThinU | Eigen::ComputeThinV);
             conf(i) = svd.singularValues()(0) / svd.singularValues().sum();
-            if (conf(i) < CONFIDENCE_TH) continue; // Should the sign here not be ">"????
+
+            if (conf(i) < CONFIDENCE_TH) continue; // If the linearity is not sufficient (curve in skeleton) - dont use the principal axis for linear projection
             
             // Compute linear projection
-            // if the neighbouring ROSA points are not linear enough, a linear projection is performed:
-            // The direction with least variance (dominant singular vector) is the one with the largest singular value (0)
-            // The points are then projected onto the dominant direction in the neighbourhood
+            // if the neighbouring ROSA points are sufficiently linear, a linear projection of the points onto the principal axis is performed:
             newpset.row(i) = svd.matrixU().col(0).transpose() * (svd.matrixU().col(0) * (pset.row(i) - local_mean.transpose()) ) + local_mean.transpose();
         }
         pset = newpset;
@@ -1378,7 +1389,6 @@ double RosaMain::symmnormal_variance(Eigen::Vector3d& symm_nor, Eigen::MatrixXd&
     // Computes the variance of the local normal vectors projected onto a symmetric normal vector
     Eigen::VectorXd alpha;
     int num = local_normals.rows();
-    Eigen::MatrixXd repmat = symm_nor.transpose().replicate(num, 1); // replicate with a row-factor of num and col-factor of 1
 
     // calculate the projection of each local normal on the symmetry normal... 
     alpha = local_normals * symm_nor; // Inner product between the symm_nor and each row (normal) in local_normals
@@ -1465,12 +1475,20 @@ Eigen::Vector3d RosaMain::closest_projection_point(Eigen::MatrixXd& P, Eigen::Ma
     if (std::abs(M.determinant()) < 1e-3) {
         vec << 1e8, 1e8, 1e8;
     }
-
     else {
         // Solving a least squares minimization problem to find the best fit projection point
         // X = M^(-1) * B
         vec = M.inverse()*B;
     }
+
+    // Use LDLT or LLT for symmetric positive semi-definite systems
+    // Eigen::LLT<Eigen::Matrix3d> solver(M);
+    // if (solver.info() != Eigen::Success) {
+    //     X << 1e8, 1e8, 1e8; // Return dummy if M is not positive definite
+    // } else {
+    //     X = solver.solve(B);
+    // }
+
     return vec;
 }
 
