@@ -219,7 +219,7 @@ void RosaNode::publish_normals(const Eigen::MatrixXd& points,
         }
     
         pub->publish(marker_array);
-    }
+    }   
 
 
 int main(int argc, char** argv) {

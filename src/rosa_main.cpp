@@ -261,7 +261,7 @@ void RosaMain::normalize() {
         Eigen::Vector3d to_sensor = lidar_pos-pt_vec;
 
         if (nrm_vec.dot(to_sensor) < 0) {
-            nrm_vec = -nrm_vec;
+            nrm_vec = -nrm_vec; 
         }
 
         nrm.normal_x = nrm_vec(0);
@@ -282,7 +282,7 @@ void RosaMain::normalize() {
     }
 
     th_mah = 0.1*radius_neigh; // Threshold for similarity neighbour extraction (original 0.1 * radius_neigh)
-    delta = leaf_size_ds; // original: Plane slice thickness kept equal to the voxel leaf size
+    delta = 10*leaf_size_ds; // original: Plane slice thickness kept equal to the voxel leaf size
 }
 
 void RosaMain::mahanalobis_mat(double &radius_r) {
