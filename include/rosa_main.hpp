@@ -7,6 +7,7 @@
 #include <stack>
 #include <algorithm>
 #include <map>
+#include <random>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -152,6 +153,9 @@ struct SkeletonDecomposition
     std::vector<int> end_ids;
     std::vector<int> bad_ids;
 
+    std::map<int, std::vector<int>> branches;
+    std::set<int> branch_endpoints;
+
     Eigen::MatrixXd global_vertices; // Global skeleton vertices
 
 };
@@ -184,20 +188,25 @@ private:
     void drosa();
     void dcrosa();
     void vertex_sampling();
+    void vertex_sampling_kmeans();
+
     void local_lineextract();
     void vertex_recenter();
     void restore_scale();
     void kf_skeleton_incr();
     void graph_adj();
-    void mst();
-    void prune_branches();
-    void update_skeleton();
 
-    
-    void vertex_merge();
-    void graph_decomp();
     void global_lineextraction();
 
+    void mst();
+    void graph_decomp();
+    void vertex_merge();
+    void branch_extract();
+    void prune_branches();
+    void update_skeleton();
+    
+    
+    
     void rosa_initialize(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, pcl::PointCloud<pcl::Normal>::Ptr &normals);
     Eigen::Matrix3d create_orthonormal_frame(Eigen::Vector3d &v);
     Eigen::MatrixXd compute_active_samples(int &idx, Eigen::Vector3d &p_cut, Eigen::Vector3d &v_cut);
@@ -208,8 +217,11 @@ private:
     int argmax_eigen(Eigen::MatrixXd &x);
     void extract_seg_dfs(int current, int parent, std::vector<int> &visited, std::vector<int> &seg);
     std::vector<int> dfs_branch_collect(int start, int parent);
+    std::pair<Eigen::Vector3d, double> PCA(Eigen::MatrixXd& A);
 
-
+    pcl::PointCloud<pcl::PointXYZ>::Ptr scale_transform_debugger(Eigen::MatrixXd &points);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr scale_transform_debugger(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud);
+    
     /* Params */
     double pts_dist_lim; // For lidar point distance filtering
     int ne_KNN; // K normal estimation neighbours
@@ -243,6 +255,8 @@ private:
     Eigen::MatrixXi bad_sample;
     
     int new_vers; // Used for MST updates...
+    std::map<int, int> vertex_to_branch; // Map from global skeleton index to branch id...
+
 
     /* Utils */
     std::unique_ptr<pcl::octree::OctreePointCloudSearch<pcl::PointXYZ>> global_octree;
