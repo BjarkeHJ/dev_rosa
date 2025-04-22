@@ -68,43 +68,47 @@ void RosaMain::main() {
     }
 
     debug_cloud_2 = scale_transform_debugger(SSD.pts_);
+    pts_tf = scale_transform_debugger_matmat(SSD.pts_matrix);
 
     /* Main Rosa Algorithm */
     mahanalobis_mat(radius_neigh);
     drosa();
     dcrosa();
+
     // Extract points and transform them...
     // debug_cloud = scale_transform_debugger(pset);
 
 
-    // vertex_sampling();
-    
-    vertex_sampling_kmeans();
+    // std::cout << "Before sampling..." << std::endl;
+    vertex_sampling();
+    // vertex_sampling_kmeans();
 
-    // local_lineextract();
+    local_lineextract();
+    // std::cout << "Before recenter..." << std::endl;
+
+
     vertex_recenter();
+    // std::cout << "Before restoring..." << std::endl;
+
     restore_scale();
 
     /* Global Skeleton Extraction */
-    kf_skeleton_incr();
-    graph_adj();
+    // kf_skeleton_incr();
+    // graph_adj();
 
 
     // global_lineextraction();
-    mst();
+    // mst();
 
 
-    graph_decomp();
-    vertex_merge();
+    // graph_decomp();
+    // vertex_merge();
     // branch_extract();
 
     
     // prune_branches();
-    update_skeleton();
+    // update_skeleton();
 
-
-
-    
     // for (int i=0; i<(int)SSD.gadj.rows(); ++i) {
         //     for (int j=0; j<(int)SSD.gadj.cols(); ++j) {
             //         std::cout << SSD.gadj(i,j) << " ";
@@ -145,16 +149,16 @@ void RosaMain::main() {
     // incremental_graph();
     // global_lineextraction();
 
-    debug_cloud = SSD.global_skeleton;
+    // debug_cloud = SSD.global_skeleton;
 
-    // debug_cloud->points.clear();
-    // for (int i=0; i<(int)SSD.skelver_scaled.rows(); ++i) {
-    //     pcl::PointXYZ pt;
-    //     pt.x = SSD.skelver_scaled(i,0);
-    //     pt.y = SSD.skelver_scaled(i,1);
-    //     pt.z = SSD.skelver_scaled(i,2);
-    //     debug_cloud->points.push_back(pt);
-    // }
+    debug_cloud->points.clear();
+    for (int i=0; i<(int)SSD.skelver_scaled.rows(); ++i) {
+        pcl::PointXYZ pt;
+        pt.x = SSD.skelver_scaled(i,0);
+        pt.y = SSD.skelver_scaled(i,1);
+        pt.z = SSD.skelver_scaled(i,2);
+        debug_cloud->points.push_back(pt);
+    }
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end - start;
@@ -216,7 +220,8 @@ void RosaMain::normalize() {
     pcl::search::KdTree<pcl::PointXYZ>::Ptr ne_tree(new pcl::search::KdTree<pcl::PointXYZ>);
     ne.setInputCloud(SSD.pts_);
     ne.setSearchMethod(ne_tree);
-    ne.setKSearch(ne_KNN);
+    // ne.setKSearch(ne_KNN);
+    ne.setRadiusSearch(0.05);
     ne.compute(*SSD.normals_); 
 
     pcl::concatenateFields(*SSD.pts_, *SSD.normals_, *SSD.cloud_w_normals);
@@ -326,7 +331,7 @@ void RosaMain::mahanalobis_mat(double &radius_r) {
 }
 
 double RosaMain::pt_mahalanobis_metric(pcl::PointXYZ &p1, pcl::Normal &v1, pcl::PointXYZ &p2, pcl::Normal &v2, double &range_r) {
-    double Fs = 5.0;
+    double Fs = 10.0;
     double k = 0.0;
     double dist, vec_dot, w;
     Eigen::Vector3d p1_, p2_, v1_, v2_;
@@ -385,7 +390,6 @@ void RosaMain::drosa() {
             var_p = pset.row(pidx); // Search point for activate samples
             var_v = vset.row(pidx); // Corresponding plane normal estimate
             indxs = compute_active_samples(pidx, var_p, var_v);
-
             extract_normals = ed_.rows_ext_M(indxs, SSD.nrs_matrix);
 
             // Compute the vector that minimizes the variance of angles between local normals and itself
@@ -441,11 +445,6 @@ void RosaMain::drosa() {
     for (int pIdx=0; pIdx<pcd_size_; pIdx++) {
         var_p_p = pset.row(pIdx);
         var_v_p = vset.row(pIdx).normalized();        
-        // if (abs(var_v_p.dot(SSD.nrs_matrix.row(pIdx).normalized())) > 0.5) {
-        //     std::cout << "Skip point - Planar Surface..." << std::endl;
-        //     continue;
-        // }
-
         indxs_p = compute_active_samples(pIdx, var_p_p, var_v_p); // Extract active samples
 
         /* Update neighbours to be from the same plane slice */
@@ -508,6 +507,9 @@ void RosaMain::dcrosa() {
     Eigen::MatrixXi int_indxs;
     Eigen::MatrixXd newpset, indxs, extract_neighs;
     newpset.resize(pcd_size_, 3);
+    Eigen::MatrixXd is_linear;
+    is_linear.resize(pcd_size_, 1); 
+    is_linear.setConstant(0);
 
     for (int n=0; n<dcrosa_iter; n++) {
         for (int i=0; i<pcd_size_; i++) {
@@ -548,12 +550,17 @@ void RosaMain::dcrosa() {
         double CONFIDENCE_TH = 0.5; // Originally 0.5
 
         for (int i=0; i<pcd_size_; i++) {
-            std::vector<int> pt_idx(k_KNN);
-            std::vector<float> pt_dists(k_KNN);
-            pset_tree.nearestKSearch(pset_cloud->points[i], k_KNN, pt_idx, pt_dists);
+            // std::vector<int> pt_idx(k_KNN);
+            // std::vector<float> pt_dists(k_KNN);
+            // pset_tree.nearestKSearch(pset_cloud->points[i], k_KNN, pt_idx, pt_dists);
 
-            Eigen::MatrixXd neighbours(k_KNN, 3);
-            for (int j=0; j<k_KNN; j++) {
+            std::vector<int> pt_idx;
+            std::vector<float> pt_dists;
+            double pset_rad = 0.005;
+            pset_tree.radiusSearch(pset_cloud->points[i], pset_rad, pt_idx, pt_dists);
+
+            Eigen::MatrixXd neighbours(pt_idx.size(), 3);
+            for (int j=0; j<pt_idx.size(); j++) {
                 neighbours.row(j) = pset.row(pt_idx[j]);
             }
 
@@ -571,9 +578,50 @@ void RosaMain::dcrosa() {
             // Compute linear projection
             // if the neighbouring ROSA points are sufficiently linear, a linear projection of the points onto the principal axis is performed:
             newpset.row(i) = svd.matrixU().col(0).transpose() * (svd.matrixU().col(0) * (pset.row(i) - local_mean.transpose()) ) + local_mean.transpose();
+            is_linear(i,0) = 1;
         }
         pset = newpset;
     }
+
+    int new_idx = 0;
+    std::unordered_map<int, int> old_to_new_idx;
+    Eigen::MatrixXd filtered_pset(static_cast<int>(is_linear.sum()), 3);
+    std::vector<std::vector<int>> new_neighs;
+    std::vector<std::vector<int>> new_neighs_surf;
+
+    for (int i = 0; i < pcd_size_; ++i) {
+        if (is_linear(i, 0) != 1) continue;
+
+        old_to_new_idx[i] = new_idx;
+        filtered_pset.row(new_idx) = pset.row(i);
+
+        std::vector<int> filtered_neigh;
+        std::vector<int> filtered_neigh_surf;
+
+        for (int old_neighbor : SSD.neighs[i]) {
+            auto it = old_to_new_idx.find(old_neighbor);
+            if (it != old_to_new_idx.end()) {
+                filtered_neigh.push_back(it->second);
+            }
+        }
+
+        for (int old_neighbor : SSD.neighs_surf[i]) {
+            auto it = old_to_new_idx.find(old_neighbor);
+            if (it != old_to_new_idx.end()) {
+                filtered_neigh_surf.push_back(it->second);
+            }
+        }
+
+        new_neighs.push_back(filtered_neigh);
+        new_neighs_surf.push_back(filtered_neigh_surf);
+        new_idx++;
+    }
+    pset = filtered_pset;
+    pcd_size_ = pset.rows();
+    SSD.neighs = new_neighs;
+    SSD.neighs_surf = new_neighs_surf;
+    SSD.pts_matrix = ed_dc.rows_ext_M(is_linear, SSD.pts_matrix);
+    SSD.nrs_matrix = ed_dc.rows_ext_M(is_linear, SSD.nrs_matrix);
 }
 
 void RosaMain::vertex_sampling() {
@@ -584,9 +632,9 @@ void RosaMain::vertex_sampling() {
     pcl::PointXYZ pset_pt;
     pset_cloud->clear();
     for (int i=0; i<pcd_size_; i++) {
-        if ((int)SSD.neighs[i].size() <= outlier) {
-            bad_sample(i,0) = 1;
-        }
+        // if ((int)SSD.neighs[i].size() <= outlier) {
+        //     bad_sample(i,0) = 1;
+        // }
         pset_pt.x = pset(i,0);
         pset_pt.y = pset(i,1);
         pset_pt.z = pset(i,2);
@@ -608,7 +656,7 @@ void RosaMain::vertex_sampling() {
     fps_tree.setInputCloud(pset_cloud);
     SSD.skelver.resize(0,3);
     
-    sample_radius = 2 * leaf_size_ds;
+    sample_radius = leaf_size_ds;
     std::cout << "Vertex Sampling Radius: " << sample_radius << std::endl;
 
     // Farthest Point Sampling (FPS) / Skeletonization / Vertex selection
@@ -663,13 +711,14 @@ void RosaMain::vertex_sampling() {
     }
 
     int dim = SSD.skelver.rows();
-    std::vector<int> temp_surf(k_KNN);
+    // std::vector<int> temp_surf(k_KNN);
+    std::vector<int> temp_surf;
     std::vector<int> good_neighs;
     SSD.Adj.resize(dim, dim);
 
     // Create adjacency matrix of the skeleton vertices
     for (int pIdx=0; pIdx<pcd_size_; pIdx++) {
-        if ((int)SSD.neighs[pIdx].size() <= outlier) continue;
+        // if ((int)SSD.neighs[pIdx].size() <= outlier) continue;
         temp_surf.clear();
         good_neighs.clear();
         temp_surf = SSD.neighs_surf[pIdx];
@@ -1790,6 +1839,29 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr RosaMain::scale_transform_debugger(pcl::Poin
         pt_tf.y = tfpt(1);
         pt_tf.z = tfpt(2);
         scaled_->points.push_back(pt_tf);
+    }
+    return scaled_;
+}
+
+Eigen::MatrixXd RosaMain::scale_transform_debugger_matmat(Eigen::MatrixXd &points) {
+    /* For restoring matrix structure to matrix */
+    Eigen::MatrixXd scaled_;
+    scaled_.resize(points.rows(), points.cols());
+
+    Eigen::RowVector3d centroid3 = centroid.head<3>().transpose();
+    Eigen::Quaterniond q(transform.transform.rotation.w,
+                         transform.transform.rotation.x,
+                         transform.transform.rotation.y,
+                         transform.transform.rotation.z);
+    Eigen::Matrix3d R = q.toRotationMatrix();
+    Eigen::Vector3d t(transform.transform.translation.x,
+                      transform.transform.translation.y,
+                      transform.transform.translation.z);
+
+    for (int i=0; i<(int)points.rows(); ++i) {
+        Eigen::Vector3d pt_local = points.row(i) * norm_scale + centroid3;
+        Eigen::Vector3d tfpt = R * pt_local + t;
+        scaled_.row(i) = tfpt;
     }
     return scaled_;
 }

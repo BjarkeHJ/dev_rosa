@@ -12,6 +12,10 @@ public:
     void set_cloud();
     void run();
 
+    void publish_normals(const Eigen::MatrixXd& points,
+        const Eigen::MatrixXd& normals,
+        rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub);
+
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pcd_sub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pcd_repub_;
     rclcpp::TimerBase::SharedPtr run_timer_;
@@ -22,6 +26,7 @@ public:
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_pub_2_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr adj_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr nrm_pub_;
     
 private:
     /* Params */
@@ -59,6 +64,7 @@ void RosaNode::init() {
     debug_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/debugger", 10);
     debug_pub_2_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/debugger_2", 10);
     adj_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/adj_lines", 10);
+    nrm_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/surface_normals", 10);
 }
 
 void RosaNode::init_modules() {
@@ -123,6 +129,7 @@ void RosaNode::run() {
             db_out_2.header.stamp = this->get_clock()->now();
             debug_pub_2_->publish(db_out_2);
 
+            publish_normals(skel_op->pts_tf, skel_op->SSD.nrs_matrix, nrm_pub_);
 
             visualization_msgs::msg::Marker lines;
             lines.header.frame_id = "World";
@@ -169,6 +176,51 @@ void RosaNode::run() {
         }
     }
 }
+
+void RosaNode::publish_normals(const Eigen::MatrixXd& points,
+    const Eigen::MatrixXd& normals,
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub) 
+    {
+        visualization_msgs::msg::MarkerArray marker_array;
+        int id = 0;
+    
+        for (size_t i = 0; i < points.rows(); ++i) {
+            const auto& pt = points.row(i);
+            const auto& n = normals.row(i);
+    
+            visualization_msgs::msg::Marker arrow;
+            arrow.header.frame_id = "World";
+            // arrow.header.stamp = rclcpp::Clock().now();
+            arrow.header.stamp = this->get_clock()->now();
+            arrow.ns = "normals";
+            arrow.id = id++;
+            arrow.type = visualization_msgs::msg::Marker::ARROW;
+            arrow.action = visualization_msgs::msg::Marker::ADD;
+            arrow.scale.x = 0.02; // shaft diameter
+            arrow.scale.y = 0.04; // head diameter
+            arrow.scale.z = 0.1;  // head length
+            arrow.color.r = 0.5;
+            arrow.color.g = 0.5;
+            arrow.color.b = 0.0;
+            arrow.color.a = 1.0;
+            arrow.lifetime = rclcpp::Duration::from_seconds(0); // persistent
+    
+            geometry_msgs::msg::Point p_start, p_end;
+            p_start.x = pt(0);
+            p_start.y = pt(1);
+            p_start.z = pt(2);
+            p_end.x = pt(0) + 1.0 * n(0);  // Scale normal for visibility
+            p_end.y = pt(1) + 1.0 * n(1);
+            p_end.z = pt(2) + 1.0 * n(2);
+    
+            arrow.points.push_back(p_start);
+            arrow.points.push_back(p_end);
+            marker_array.markers.push_back(arrow);
+        }
+    
+        pub->publish(marker_array);
+    }
+
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);

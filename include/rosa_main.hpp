@@ -133,9 +133,8 @@ struct SkeletonDecomposition
     Eigen::MatrixXd pts_matrix;
     Eigen::MatrixXd nrs_matrix;
 
-    std::vector<std::vector<int>> neighs; // For each point x in pts_ store the indices of the neighbouring point int neighs[x].
-    std::vector<std::vector<int>> neighs_new;
-    std::vector<std::vector<int>> neighs_surf;
+    std::vector<std::vector<int>> neighs; // For each point x in pts_ store the indices of the neighbouring point int neighs[x] based on Maha
+    std::vector<std::vector<int>> neighs_surf; // Surface KNN search
 
     Eigen::MatrixXd skelver; // Current skeleton vertices
     Eigen::MatrixXd skelver_scaled; // Rescale and transformed vertices 
@@ -170,6 +169,7 @@ public:
     pcl::PointCloud<pcl::PointXYZ>::Ptr debug_cloud;
     pcl::PointCloud<pcl::PointXYZ>::Ptr debug_cloud_2;
     pcl::PointCloud<pcl::PointXYZ>::Ptr pts_dist_filt;
+    Eigen::MatrixXd pts_tf;
 
     /* Utils */
     SkeletonDecomposition SSD;
@@ -221,6 +221,7 @@ private:
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr scale_transform_debugger(Eigen::MatrixXd &points);
     pcl::PointCloud<pcl::PointXYZ>::Ptr scale_transform_debugger(pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud);
+    Eigen::MatrixXd scale_transform_debugger_matmat(Eigen::MatrixXd &points);
     
     /* Params */
     double pts_dist_lim; // For lidar point distance filtering
